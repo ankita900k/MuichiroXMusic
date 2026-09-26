@@ -4053,7 +4053,7 @@ async def start_hunt_schedulers(
         None
     ):
 
-        application._hunt_master_task = (
+        _hunt_master_task = (
             asyncio.create_task(
                 hunt_master_scheduler(
                     application
