@@ -138,6 +138,22 @@ async def _start_track(chat_id: int, track: Track, replacing=False):
                 track.source_url or track.query
             )
 
+        # Prime Pyrogram's peer cache before PyTgCalls tries to join/play.
+        # This prevents `ValueError: Peer id invalid` for supergroup IDs
+        # such as -100xxxxxxxxxx when the user session has not resolved
+        # the peer in its current process yet.
+        voice_client = getattr(runtime.voice, "client", None)
+        if voice_client is not None:
+            try:
+                await voice_client.get_chat(chat_id)
+            except Exception:
+                # get_chat can fail on some Pyrogram versions even when
+                # resolve_peer is sufficient for PyTgCalls.
+                try:
+                    await voice_client.resolve_peer(chat_id)
+                except Exception:
+                    pass
+
         await runtime.voice.play(chat_id, track.media_path)
     except Exception:
         if track.media_path and track.media_path != getattr(
