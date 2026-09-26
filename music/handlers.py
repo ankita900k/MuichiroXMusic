@@ -50,9 +50,17 @@ async def _download_thumbnail(url: str):
                 if not data:
                     return None
 
-        # Telegram audio thumbnails must be JPEG. Convert whatever the
-        # source provides (WEBP/PNG/JPEG/etc.) to a small real JPEG.
-        from PIL import Image
+        # YouTube's hqdefault thumbnail is already JPEG, so keep it as-is.
+        # This avoids making Pillow a hard dependency for VC thumbnails.
+        if data.startswith(b"\xff\xd8\xff"):
+            return io.BytesIO(data)
+
+        # For non-JPEG thumbnails, convert when Pillow is available. If it is
+        # not installed, simply skip the thumbnail rather than breaking music.
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
 
         source = io.BytesIO(data)
         with Image.open(source) as image:
@@ -362,7 +370,8 @@ async def _send_audio(query, track, update):
                 f"Annie returned an invalid/empty audio file ({size} bytes)"
             )
 
-        thumb = await _download_thumbnail(track.thumbnail)
+        # /audio intentionally has NO thumbnail.  The thumbnail is reserved
+        # for the VC Now Playing control message.
         kwargs = {
             "audio": InputFile(
                 audio_path,
@@ -373,12 +382,6 @@ async def _send_audio(query, track, update):
         }
         if track.duration:
             kwargs["duration"] = track.duration
-        if thumb:
-            thumb.seek(0)
-            kwargs["thumbnail"] = InputFile(
-                thumb,
-                filename="thumbnail.jpg",
-            )
 
         await update.effective_message.reply_audio(**kwargs)
     finally:
@@ -453,10 +456,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if state.current is not None:
                 position = player_manager.enqueue(chat_id, track)
-                await call.answer(
-                    f"➕ Added to the queue at position #{position}.",
-                    show_alert=True,
-                )
                 try:
                     await call.message.edit_text(
                         "➕ <b>𝗔𝗗𝗗𝗘𝗗 𝗧𝗢 𝗤𝗨𝗘𝗨𝗘</b>\n\n"

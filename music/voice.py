@@ -28,6 +28,7 @@ class VoiceChat:
         self.calls = PyTgCalls(self.client)
         self.on_ended = None
         self.started = False
+        self._dialogs_warmed = False
 
     async def start(self):
         if self.started:
@@ -40,14 +41,67 @@ class VoiceChat:
             me.username or "no_username",
             me.id,
         )
+
+        # PyTgCalls ultimately asks Pyrogram to resolve the group ID.  On a
+        # fresh Render restart, Pyrogram's local peer cache can be empty even
+        # though the assistant is already a member of the group.  Loading the
+        # dialogs once repopulates that cache and prevents:
+        #   ValueError: Peer id invalid: -100...
+        await self._warm_dialog_cache()
+
         await self.calls.start()
         self.started = True
+
+    async def _warm_dialog_cache(self, target_chat_id: int | None = None):
+        if self._dialogs_warmed and target_chat_id is None:
+            return
+
+        found = target_chat_id is None
+        try:
+            async for dialog in self.client.get_dialogs():
+                if target_chat_id is not None and dialog.chat:
+                    if dialog.chat.id == target_chat_id:
+                        found = True
+                        break
+        except Exception as exc:
+            log.warning("Could not warm Pyrogram peer cache: %s", exc)
+            if target_chat_id is None:
+                return
+
+        if target_chat_id is None:
+            self._dialogs_warmed = True
+        elif found:
+            log.debug("Pyrogram peer cache contains chat %s", target_chat_id)
+
+    async def _ensure_peer_cached(self, chat_id: int):
+        # Fast path: if Pyrogram already knows this peer, nothing else is
+        # needed.  Do not expose resolve_peer() to the caller or swallow a
+        # bad peer ID; PyTgCalls will perform the final resolution itself.
+        try:
+            await self.client.resolve_peer(chat_id)
+            return
+        except (KeyError, ValueError):
+            pass
+
+        # Fresh sessions commonly need this after a Render restart.
+        await self._warm_dialog_cache(chat_id)
+
+        try:
+            await self.client.resolve_peer(chat_id)
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError(
+                "The music assistant cannot resolve this group. "
+                "Make sure the assistant account is a member of the group "
+                "and has access to its voice chat, then try /play again."
+            ) from exc
 
     async def play(self, chat_id: int, path: str):
         if not self.started:
             raise RuntimeError("Music voice layer is not started")
         if not path or not os.path.exists(path):
             raise ValueError("Prepared audio file is missing")
+
+        await self._ensure_peer_cached(chat_id)
 
         stream = MediaStream(
             str(Path(path).resolve()),
@@ -86,10 +140,9 @@ class VoiceChat:
             pass
 
         self.started = False
+        self._dialogs_warmed = False
 
     def _active_chat_ids(self):
-        # PyTgCalls does not expose a stable public list across all versions;
-        # the player manager owns the authoritative set.
         try:
             from .manager import player_manager
             return player_manager.active_chats()

@@ -74,18 +74,41 @@ class AnnieAPI:
 
                 return await self._save_response(response)
 
+    @staticmethod
+    def _detect_suffix(content_type: str, head: bytes):
+        ct = (content_type or "").lower()
+
+        # Prefer the actual file signature over a generic application/octet-stream
+        # header.  Some download endpoints return valid M4A/MP3 data with a
+        # generic Content-Type, which previously made us save it as .mp3.
+        if head.startswith(b"OggS") or "ogg" in ct or "opus" in ct:
+            return ".ogg"
+        if head.startswith(b"ID3") or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
+            return ".mp3"
+        if head.startswith(b"\x1a\x45\xdf\xa3") or "webm" in ct or "matroska" in ct:
+            return ".webm"
+        if len(head) >= 12 and head[4:8] == b"ftyp":
+            return ".m4a"
+        if "m4a" in ct or "mp4" in ct or "audio/mp4" in ct:
+            return ".m4a"
+        if "webm" in ct:
+            return ".webm"
+        if "ogg" in ct or "opus" in ct:
+            return ".ogg"
+        return ".mp3"
+
     async def _save_response(self, response):
         content_type = (
             response.headers.get("Content-Type") or ""
         ).lower()
 
-        suffix = ".mp3"
-        if "ogg" in content_type or "opus" in content_type:
-            suffix = ".ogg"
-        elif "m4a" in content_type or "mp4" in content_type:
-            suffix = ".m4a"
-        elif "webm" in content_type:
-            suffix = ".webm"
+        # Read only a tiny prefix first so the final extension matches the
+        # actual media container even when the server sends a generic header.
+        head = await response.content.read(64)
+        if not head:
+            raise RuntimeError("Annie returned an empty audio response")
+
+        suffix = self._detect_suffix(content_type, head)
 
         fd, path = tempfile.mkstemp(
             prefix="muichiro_music_", suffix=suffix
@@ -94,9 +117,8 @@ class AnnieAPI:
 
         try:
             with open(path, "wb") as output:
-                async for chunk in response.content.iter_chunked(
-                    1024 * 256
-                ):
+                output.write(head)
+                async for chunk in response.content.iter_chunked(1024 * 256):
                     if chunk:
                         output.write(chunk)
 
@@ -107,12 +129,16 @@ class AnnieAPI:
                 )
 
             with open(path, "rb") as check:
-                head = check.read(32)
+                probe = check.read(512).lstrip().lower()
 
-            # Reject common HTML/JSON error bodies accidentally saved as audio.
-            stripped = head.lstrip().lower()
-            if stripped.startswith(b"<html") or stripped.startswith(b"<!doctype") or stripped.startswith(b"{\""):
-                raise RuntimeError("Annie returned an error response instead of audio")
+            if (
+                probe.startswith(b"<html")
+                or probe.startswith(b"<!doctype")
+                or probe.startswith(b"{\"")
+            ):
+                raise RuntimeError(
+                    "Annie returned an error response instead of audio"
+                )
 
             return path
         except Exception:
