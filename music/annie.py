@@ -28,7 +28,7 @@ class AnnieAPI:
     async def prepare_audio(self, query: str):
         url = self.audio_url(query)
         timeout = aiohttp.ClientTimeout(
-            total=300, connect=15, sock_read=60
+            total=600, connect=20, sock_read=120
         )
         headers = {"User-Agent": "MuichiroMusic/2.0"}
 
@@ -100,8 +100,19 @@ class AnnieAPI:
                     if chunk:
                         output.write(chunk)
 
-            if os.path.getsize(path) == 0:
-                raise RuntimeError("Annie returned an empty audio file")
+            size = os.path.getsize(path)
+            if size < 1024:
+                raise RuntimeError(
+                    f"Annie returned an invalid/empty audio file ({size} bytes)"
+                )
+
+            with open(path, "rb") as check:
+                head = check.read(32)
+
+            # Reject common HTML/JSON error bodies accidentally saved as audio.
+            stripped = head.lstrip().lower()
+            if stripped.startswith(b"<html") or stripped.startswith(b"<!doctype") or stripped.startswith(b"{\""):
+                raise RuntimeError("Annie returned an error response instead of audio")
 
             return path
         except Exception:

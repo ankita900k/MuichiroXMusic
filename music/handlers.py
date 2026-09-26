@@ -40,17 +40,30 @@ async def _download_thumbnail(url: str):
         return None
 
     try:
-        timeout = aiohttp.ClientTimeout(total=12)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.read()
-                    if data:
-                        return io.BytesIO(data)
-    except Exception:
-        pass
+        timeout = aiohttp.ClientTimeout(total=20, connect=10, sock_read=15)
+        headers = {"User-Agent": "Mozilla/5.0 MuichiroMusic/2.0"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status != 200:
+                    return None
+                data = await response.read()
+                if not data:
+                    return None
 
-    return None
+        # Telegram audio thumbnails must be JPEG. Convert whatever the
+        # source provides (WEBP/PNG/JPEG/etc.) to a small real JPEG.
+        from PIL import Image
+
+        source = io.BytesIO(data)
+        with Image.open(source) as image:
+            image = image.convert("RGB")
+            output = io.BytesIO()
+            image.thumbnail((600, 600), Image.Resampling.LANCZOS)
+            image.save(output, format="JPEG", quality=88, optimize=True)
+            output.seek(0)
+            return output
+    except Exception:
+        return None
 
 
 def _now_text(state):
@@ -224,27 +237,6 @@ async def _make_track(update: Update, query: str) -> Track:
     )
 
 
-async def _ensure_vc_peer(chat_id: int):
-    """Resolve the Telegram supergroup in the Pyrogram user session first.
-
-    PyTgCalls can raise `Peer id invalid` when its Pyrogram client has not
-    resolved the -100... peer yet.  Resolving it here keeps the existing
-    VoiceChat/PyTgCalls playback path unchanged.
-    """
-    voice = runtime.voice
-    if voice is None:
-        raise RuntimeError("Music voice layer is not initialized")
-
-    client = getattr(voice, "client", None)
-    if client is None:
-        raise RuntimeError("Pyrogram music client is not available")
-
-    try:
-        await client.resolve_peer(chat_id)
-    except Exception as exc:
-        log.warning("Could not resolve VC peer %s: %s", chat_id, exc)
-        raise
-
 
 async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Play a track directly in the voice chat."""
@@ -286,7 +278,6 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
                 return
 
-            await _ensure_vc_peer(chat_id)
             await _start_track(chat_id, track)
 
             await _send_now_playing(
@@ -354,23 +345,48 @@ async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _send_audio(query, track, update):
-    # Keep the original working Telegram/Annie audio delivery path.
-    # Telegram fetches the Annie audio URL directly instead of using a
-    # locally downloaded temporary file.
-    thumb = await _download_thumbnail(track.thumbnail)
-    kwargs = {
-        "audio": annie.audio_url(track.source_url or query),
-        "title": track.title,
-        "performer": track.artist or "Unknown Artist",
-    }
-    if track.duration:
-        kwargs["duration"] = track.duration
-    if thumb:
-        thumb.seek(0)
-        # Telegram requires an actual JPEG thumbnail for audio messages.
-        kwargs["thumbnail"] = InputFile(thumb, filename="thumbnail.jpg")
+    # Download the audio ourselves and upload the local file.
+    # Passing the Annie URL directly to Telegram is unreliable because
+    # Telegram's servers may time out or reject the remote URL.
+    audio_path = None
+    try:
+        audio_path = await annie.prepare_audio(
+            track.source_url or query
+        )
+        if not audio_path or not os.path.exists(audio_path):
+            raise RuntimeError("Annie did not return a valid audio file")
 
-    await update.effective_message.reply_audio(**kwargs)
+        size = os.path.getsize(audio_path)
+        if size < 1024:
+            raise RuntimeError(
+                f"Annie returned an invalid/empty audio file ({size} bytes)"
+            )
+
+        thumb = await _download_thumbnail(track.thumbnail)
+        kwargs = {
+            "audio": InputFile(
+                audio_path,
+                filename=os.path.basename(audio_path),
+            ),
+            "title": track.title,
+            "performer": track.artist or "Unknown Artist",
+        }
+        if track.duration:
+            kwargs["duration"] = track.duration
+        if thumb:
+            thumb.seek(0)
+            kwargs["thumbnail"] = InputFile(
+                thumb,
+                filename="thumbnail.jpg",
+            )
+
+        await update.effective_message.reply_audio(**kwargs)
+    finally:
+        if audio_path:
+            try:
+                os.remove(audio_path)
+            except OSError:
+                pass
 
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -454,7 +470,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             try:
-                await _ensure_vc_peer(chat_id)
                 await _start_track(chat_id, track)
                 await _send_now_playing(
                     context.bot,
