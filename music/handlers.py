@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 import aiohttp
@@ -123,7 +124,51 @@ async def _send_now_playing(bot, chat_id, state, old_message=None):
             except OSError: pass
 
 
-async def _start_track(chat_id: int, track: Track, replacing=False):
+async def _ensure_assistant_in_group(bot, chat_id: int):
+    """Join the Pyrogram assistant automatically when it is missing.
+
+    The bot must have permission to invite users via link. The invite is
+    generated for this specific group and limited to one member, so no
+    permanent invite URL is required in the environment.
+    """
+    voice = runtime.voice
+    if voice is None:
+        raise RuntimeError("Music voice layer is not initialized")
+
+    # If the assistant is already present, avoid creating an unnecessary link.
+    try:
+        member = await voice.client.get_chat_member(chat_id, "me")
+        status = getattr(member, "status", "")
+        if status not in {"left", "kicked", "banned"}:
+            await voice._warm_dialog_cache(chat_id)
+            return
+    except Exception:
+        pass
+
+    try:
+        invite = await bot.create_chat_invite_link(
+            chat_id=chat_id,
+            name="Music assistant",
+            expire_date=datetime.now(timezone.utc) + timedelta(minutes=5),
+            member_limit=1,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "The bot could not create an invite link for the music assistant. "
+            "Make sure the bot is an administrator with permission to invite users via link."
+        ) from exc
+
+    try:
+        await voice.ensure_joined(chat_id, invite.invite_link)
+    finally:
+        # A one-member/short-lived link is already constrained; revoke it when
+        # possible so it is not left around after the assistant joins.
+        try:
+            await bot.revoke_chat_invite_link(chat_id, invite.invite_link)
+        except Exception:
+            pass
+
+async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
     state = player_manager.get(chat_id)
     previous = state.current
     state.transition = replacing
@@ -132,6 +177,8 @@ async def _start_track(chat_id: int, track: Track, replacing=False):
     state.current = track
     state.paused = False
     try:
+        if bot is not None:
+            await _ensure_assistant_in_group(bot, chat_id)
         if not track.media_path or not os.path.exists(track.media_path):
             track.media_path = await annie.prepare_audio(track.source_url or track.query)
         await runtime.voice.play(chat_id, track.media_path)
@@ -217,7 +264,7 @@ async def advance_to_next(chat_id: int, bot=None, old_message=None):
             try: os.remove(old_track.media_path)
             except OSError: pass
         return False
-    await _start_track(chat_id, next_track, replacing=True)
+    await _start_track(chat_id, next_track, replacing=True, bot=bot)
     if old_track and old_track.media_path and old_track.media_path != next_track.media_path:
         try: os.remove(old_track.media_path)
         except OSError: pass
@@ -252,7 +299,7 @@ async def play_command(update, context):
             if state.current is not None:
                 position = player_manager.enqueue(chat_id, track)
                 await searching.edit_text("➕ <b>𝗔𝗗𝗗𝗘𝗗 𝗧𝗢 𝗩𝗖 𝗤𝗨𝗘𝗨𝗘</b>\n\n" f"🎵 <b>{escape(track.title)}</b>\n" f"📍 Position: <b>#{position}</b>\n" f"📋 Waiting: <b>{len(state.queue)}</b>", parse_mode=ParseMode.HTML); return
-            await _start_track(chat_id, track)
+            await _start_track(chat_id, track, bot=context.bot)
             await _send_now_playing(context.bot, chat_id, state, old_message=searching)
     except Exception as exc:
         log.exception("VC playback failed")
@@ -307,7 +354,7 @@ async def callback(update, context):
                 except Exception: pass
                 return
             try:
-                await _start_track(chat_id, track)
+                await _start_track(chat_id, track, bot=context.bot)
                 await _send_now_playing(context.bot, chat_id, state, old_message=call.message)
             except Exception as exc:
                 state.current = None; state.paused = False

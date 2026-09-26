@@ -95,6 +95,48 @@ class VoiceChat:
                 "and has access to its voice chat, then try /play again."
             ) from exc
 
+    async def ensure_joined(self, chat_id: int, invite_link: str):
+        """Ensure the Pyrogram assistant is a member of the target group.
+
+        The invite link is created dynamically by the Telegram bot for the
+        current group, so no permanent invite link needs to be stored.
+        """
+        if not invite_link:
+            raise RuntimeError("No invite link was provided for the assistant")
+
+        # Check membership first. This also warms Pyrogram's peer cache when
+        # the assistant is already present.
+        try:
+            member = await self.client.get_chat_member(chat_id, "me")
+            status = getattr(member, "status", "")
+            if status not in {"left", "kicked", "banned"}:
+                await self._warm_dialog_cache(chat_id)
+                return False
+        except Exception as exc:
+            log.debug("Assistant membership check for %s failed: %s", chat_id, exc)
+
+        log.info("Assistant is not in %s; joining with the generated invite link", chat_id)
+        try:
+            await self.client.join_chat(invite_link)
+        except Exception as exc:
+            # It may have joined between the membership check and join call.
+            try:
+                member = await self.client.get_chat_member(chat_id, "me")
+                status = getattr(member, "status", "")
+                if status not in {"left", "kicked", "banned"}:
+                    await self._warm_dialog_cache(chat_id)
+                    return True
+            except Exception:
+                pass
+            raise RuntimeError(
+                "The music assistant could not join this group using the generated invite link. "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        # Force the joined group's peer into the local cache before PyTgCalls.
+        await self._warm_dialog_cache(chat_id)
+        return True
+
     async def play(self, chat_id: int, path: str):
         if not self.started:
             raise RuntimeError("Music voice layer is not started")
