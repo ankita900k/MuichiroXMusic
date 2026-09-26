@@ -239,6 +239,7 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else "Unknown"
         ),
         source_url=source_url,
+        artist=info.get("artist") or "Unknown Artist",
         thumbnail=thumbnail,
         duration=int(duration) if duration else None,
     )
@@ -277,7 +278,7 @@ async def _send_audio(query, track, update):
         kwargs = {
             "audio": InputFile(path, filename=filename),
             "title": track.title,
-            "performer": "Music Player",
+            "performer": track.artist or "Unknown Artist",
             "write_timeout": 120,
             "read_timeout": 120,
             "connect_timeout": 30,

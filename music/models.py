@@ -9,6 +9,7 @@ class Track:
     requested_by: int
     requested_name: str
     source_url: str
+    artist: str = "Unknown Artist"
     thumbnail: Optional[str] = None
     duration: Optional[int] = None
     media_path: Optional[str] = None

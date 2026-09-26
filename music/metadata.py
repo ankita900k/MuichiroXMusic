@@ -30,6 +30,7 @@ def _direct_metadata(query: str):
     return {
         "id": video_id,
         "title": query,
+        "artist": "Unknown Artist",
         "webpage_url": url,
         "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
         "duration": None,
@@ -72,6 +73,8 @@ def _extract_search_result(html: str, query: str):
         vid = item.get("videoId")
         title_runs = (item.get("title") or {}).get("runs") or []
         title = "".join(r.get("text", "") for r in title_runs).strip() or query
+        artist_runs = (item.get("ownerText") or {}).get("runs") or []
+        artist = "".join(r.get("text", "") for r in artist_runs).strip() or "Unknown Artist"
         length = (item.get("lengthText") or {}).get("simpleText")
         duration = None
         if length:
@@ -87,6 +90,7 @@ def _extract_search_result(html: str, query: str):
         return {
             "id": vid,
             "title": title,
+            "artist": artist,
             "webpage_url": f"https://www.youtube.com/watch?v={vid}",
             "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
             "duration": duration,
@@ -119,6 +123,7 @@ async def resolve(query: str):
 
     return {
         "title": query,
+        "artist": "Unknown Artist",
         "webpage_url": query,
         "thumbnail": None,
         "duration": None,
