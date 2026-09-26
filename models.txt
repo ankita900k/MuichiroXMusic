@@ -1,0 +1,15 @@
+#  Authorised by NyxLuciferX02 
+
+#CHAT
+
+model1= "llama-3.3-70b-versatile"
+model2= "llama-3.1-8b-instant"
+
+model4= "openai/gpt-oss-20b"
+model5= "openai/gpt-oss-120b"
+
+#QUESTION SOLVER
+
+
+model2="meta-llama/llama-4-maverick-17b-128e-instruct"
+model3="meta-llama/llama-4-scout-17b-16e-instruct"

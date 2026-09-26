@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: muichiro-allinone
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn webhook:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: SESSION_STRING
+        sync: false
+      - key: ANNIE_API_KEY
+        sync: false
+      - key: ANNIE_BASE_URL
+        value: https://api.alonexraj.shop
+      - key: WEBHOOK_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
