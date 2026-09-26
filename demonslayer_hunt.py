@@ -4040,6 +4040,10 @@ async def hunt_master_scheduler(
 # START HUNT SCHEDULERS
 # ============================================================
 
+# python-telegram-bot Application uses slots and does not allow arbitrary
+# custom attributes. Keep the master scheduler task at module scope.
+_hunt_master_task = None
+
 async def start_hunt_schedulers(
     application
 ):
@@ -4047,17 +4051,12 @@ async def start_hunt_schedulers(
     await setup_hunt_database()
 
 
-    if not getattr(
-        application,
-        "_hunt_master_task",
-        None
-    ):
+    global _hunt_master_task
 
-        _hunt_master_task = (
-            asyncio.create_task(
-                hunt_master_scheduler(
-                    application
-                )
+    if _hunt_master_task is None or _hunt_master_task.done():
+        _hunt_master_task = asyncio.create_task(
+            hunt_master_scheduler(
+                application
             )
         )
 

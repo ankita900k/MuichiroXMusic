@@ -266,19 +266,36 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _send_audio(query, track, update):
+    # Download the audio to Render first instead of asking Telegram's servers
+    # to fetch the Annie API URL. This avoids Telegram-side URL fetch timeouts.
+    path = None
     thumb = await _download_thumbnail(track.thumbnail)
-    kwargs = {
-        "audio": annie.audio_url(track.source_url or query),
-        "title": track.title,
-        "performer": "Music Player",
-    }
-    if track.duration:
-        kwargs["duration"] = track.duration
-    if thumb:
-        thumb.seek(0)
-        kwargs["thumbnail"] = thumb
+    try:
+        path = await annie.prepare_audio(track.source_url or query)
+        suffix = os.path.splitext(path)[1].lower() or ".m4a"
+        filename = f"{track.title[:80] or 'audio'}{suffix}"
+        kwargs = {
+            "audio": InputFile(path, filename=filename),
+            "title": track.title,
+            "performer": "Music Player",
+            "write_timeout": 120,
+            "read_timeout": 120,
+            "connect_timeout": 30,
+            "pool_timeout": 30,
+        }
+        if track.duration:
+            kwargs["duration"] = track.duration
+        if thumb:
+            thumb.seek(0)
+            kwargs["thumbnail"] = thumb
 
-    await update.effective_message.reply_audio(**kwargs)
+        await update.effective_message.reply_audio(**kwargs)
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,7 +303,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not call:
         return
 
-    await call.answer()
     data = call.data or ""
 
     if data.startswith("music:mode:"):
@@ -304,6 +320,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = call.message.chat.id if call.message else None
 
         if mode == "cancel":
+            await call.answer(
+                "✕ Playback selection cancelled.",
+                show_alert=True,
+            )
             try:
                 await call.message.delete()
             except Exception:
@@ -311,7 +331,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if mode == "audio":
-            await call.answer("Preparing audio…")
+            await call.answer(
+                "🎧 Audio selected. Preparing the audio file…",
+                show_alert=True,
+            )
             try:
                 await _send_audio(track.query, track, update)
             except Exception as exc:
@@ -323,14 +346,26 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if mode != "vc" or chat_id is None:
+            await call.answer(
+                "❌ Unknown playback mode.",
+                show_alert=True,
+            )
             return
+
+        await call.answer(
+            "🎙 VC selected. Starting playback in the voice chat…",
+            show_alert=True,
+        )
 
         async with player_manager.lock(chat_id):
             state = player_manager.get(chat_id)
 
             if state.current is not None:
                 position = player_manager.enqueue(chat_id, track)
-                await call.answer(f"Queued at #{position}")
+                await call.answer(
+                    f"➕ Added to the queue at position #{position}.",
+                    show_alert=True,
+                )
                 try:
                     await call.message.edit_text(
                         "➕ <b>𝗔𝗗𝗗𝗘𝗗 𝗧𝗢 𝗤𝗨𝗘𝗨𝗘</b>\n\n"
@@ -343,7 +378,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
                 return
 
-            await call.answer("Starting VC…")
             try:
                 await _start_track(chat_id, track)
                 await _send_now_playing(
@@ -436,6 +470,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if action == "queue":
+            await call.answer(
+                "📋 Opening the current music queue…",
+                show_alert=True,
+            )
             if not state.queue:
                 text = "📋 <b>𝗤𝗨𝗘𝗨𝗘</b>\n\nQueue is empty."
             else:
@@ -467,6 +505,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
+            await call.answer(
+                "🎵 Showing the currently playing track…",
+                show_alert=True,
+            )
             await _send_now_playing(
                 context.bot,
                 chat_id,
