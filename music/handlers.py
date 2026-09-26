@@ -138,22 +138,6 @@ async def _start_track(chat_id: int, track: Track, replacing=False):
                 track.source_url or track.query
             )
 
-        # Prime Pyrogram's peer cache before PyTgCalls tries to join/play.
-        # This prevents `ValueError: Peer id invalid` for supergroup IDs
-        # such as -100xxxxxxxxxx when the user session has not resolved
-        # the peer in its current process yet.
-        voice_client = getattr(runtime.voice, "client", None)
-        if voice_client is not None:
-            try:
-                await voice_client.get_chat(chat_id)
-            except Exception:
-                # get_chat can fail on some Pyrogram versions even when
-                # resolve_peer is sufficient for PyTgCalls.
-                try:
-                    await voice_client.resolve_peer(chat_id)
-                except Exception:
-                    pass
-
         await runtime.voice.play(chat_id, track.media_path)
     except Exception:
         if track.media_path and track.media_path != getattr(
@@ -216,34 +200,13 @@ async def advance_to_next(
     return True
 
 
-async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
-    if not message:
-        return
-
-    query = " ".join(context.args).strip()
-    if not query:
-        await message.reply_text(
-            "🎵 <b>Usage</b>\n<code>/play song name</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    _cleanup_pending()
-    searching = await message.reply_text(
-        "🔎 <b>Finding your track…</b>",
-        parse_mode=ParseMode.HTML,
-    )
-
+async def _make_track(update: Update, query: str) -> Track:
     info = await resolve(query)
-    title = info.get("title") or query
-    source_url = info.get("webpage_url") or query
-    thumbnail = info.get("thumbnail")
     duration = info.get("duration")
 
-    track = Track(
+    return Track(
         query=query,
-        title=title,
+        title=info.get("title") or query,
         requested_by=(
             update.effective_user.id
             if update.effective_user
@@ -254,32 +217,140 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if update.effective_user
             else "Unknown"
         ),
-        source_url=source_url,
+        source_url=info.get("webpage_url") or query,
         artist=info.get("artist") or "Unknown Artist",
-        thumbnail=thumbnail,
+        thumbnail=info.get("thumbnail"),
         duration=int(duration) if duration else None,
     )
 
-    token = uuid.uuid4().hex[:12]
-    pending[token] = (track, time.monotonic())
+
+async def _ensure_vc_peer(chat_id: int):
+    """Resolve the Telegram supergroup in the Pyrogram user session first.
+
+    PyTgCalls can raise `Peer id invalid` when its Pyrogram client has not
+    resolved the -100... peer yet.  Resolving it here keeps the existing
+    VoiceChat/PyTgCalls playback path unchanged.
+    """
+    voice = runtime.voice
+    if voice is None:
+        raise RuntimeError("Music voice layer is not initialized")
+
+    client = getattr(voice, "client", None)
+    if client is None:
+        raise RuntimeError("Pyrogram music client is not available")
 
     try:
-        await searching.edit_text(
-            "🎼 <b>𝗧𝗥𝗔𝗖𝗞 𝗥𝗘𝗔𝗗𝗬</b>\n\n"
-            f"🎵 <b>{escape(title)}</b>\n"
-            f"👤 {escape(track.requested_name)}\n\n"
-            "Choose where you want to play it:",
-            parse_mode=ParseMode.HTML,
-            reply_markup=mode_keyboard(token),
-        )
-    except Exception:
+        await client.resolve_peer(chat_id)
+    except Exception as exc:
+        log.warning("Could not resolve VC peer %s: %s", chat_id, exc)
+        raise
+
+
+async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Play a track directly in the voice chat."""
+    message = update.effective_message
+    if not message:
+        return
+
+    query = " ".join(context.args).strip()
+    if not query:
         await message.reply_text(
-            "🎼 <b>𝗧𝗥𝗔𝗖𝗞 𝗥𝗘𝗔𝗗𝗬</b>\n\n"
-            f"🎵 <b>{escape(title)}</b>\n"
-            "Choose playback mode:",
+            "🎙 <b>Usage</b>\n<code>/play song name</code>",
             parse_mode=ParseMode.HTML,
-            reply_markup=mode_keyboard(token),
         )
+        return
+
+    searching = await message.reply_text(
+        "🔎 <b>Finding your track for VC…</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        track = await _make_track(update, query)
+        chat_id = update.effective_chat.id
+
+        async with player_manager.lock(chat_id):
+            state = player_manager.get(chat_id)
+
+            if state.current is not None:
+                position = player_manager.enqueue(chat_id, track)
+                try:
+                    await searching.edit_text(
+                        "➕ <b>𝗔𝗗𝗗𝗘𝗗 𝗧𝗢 𝗩𝗖 𝗤𝗨𝗘𝗨𝗘</b>\n\n"
+                        f"🎵 <b>{escape(track.title)}</b>\n"
+                        f"📍 Position: <b>#{position}</b>\n"
+                        f"📋 Waiting: <b>{len(state.queue)}</b>",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+                return
+
+            await _ensure_vc_peer(chat_id)
+            await _start_track(chat_id, track)
+
+            await _send_now_playing(
+                context.bot,
+                chat_id,
+                state,
+                old_message=searching,
+            )
+
+    except Exception as exc:
+        log.exception("VC playback failed")
+        try:
+            await searching.edit_text(
+                "❌ <b>𝗩𝗖 𝗣𝗟𝗔𝗬𝗕𝗔𝗖𝗞 𝗙𝗔𝗜𝗟𝗘𝗗</b>\n\n"
+                f"<code>{escape(type(exc).__name__ + ': ' + str(exc))}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            await message.reply_text(
+                "❌ <b>VC playback failed.</b>\n"
+                f"<code>{escape(str(exc))}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
+
+async def audio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send a track as Telegram audio, independently from VC playback."""
+    message = update.effective_message
+    if not message:
+        return
+
+    query = " ".join(context.args).strip()
+    if not query:
+        await message.reply_text(
+            "🎧 <b>Usage</b>\n<code>/audio song name</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    searching = await message.reply_text(
+        "🔎 <b>Finding your audio…</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+    try:
+        track = await _make_track(update, query)
+        await _send_audio(query, track, update)
+        try:
+            await searching.delete()
+        except Exception:
+            pass
+    except Exception as exc:
+        try:
+            await searching.edit_text(
+                "❌ <b>Audio delivery failed.</b>\n"
+                f"<code>{escape(type(exc).__name__ + ': ' + str(exc))}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            await message.reply_text(
+                "❌ <b>Audio delivery failed.</b>\n"
+                f"<code>{escape(str(exc))}</code>",
+                parse_mode=ParseMode.HTML,
+            )
 
 
 async def _send_audio(query, track, update):
@@ -296,7 +367,8 @@ async def _send_audio(query, track, update):
         kwargs["duration"] = track.duration
     if thumb:
         thumb.seek(0)
-        kwargs["thumbnail"] = thumb
+        # Telegram requires an actual JPEG thumbnail for audio messages.
+        kwargs["thumbnail"] = InputFile(thumb, filename="thumbnail.jpg")
 
     await update.effective_message.reply_audio(**kwargs)
 
@@ -382,6 +454,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             try:
+                await _ensure_vc_peer(chat_id)
                 await _start_track(chat_id, track)
                 await _send_now_playing(
                     context.bot,
@@ -732,6 +805,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def get_handlers():
     return [
         CommandHandler("play", play_command),
+        CommandHandler("audio", audio_command),
         CommandHandler("queue", queue_command),
         CommandHandler("now", now_command),
         CommandHandler("skip", skip_command),
