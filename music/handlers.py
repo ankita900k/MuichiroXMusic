@@ -267,36 +267,22 @@ async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _send_audio(query, track, update):
-    # Download the audio to Render first instead of asking Telegram's servers
-    # to fetch the Annie API URL. This avoids Telegram-side URL fetch timeouts.
-    path = None
+    # Keep the original working Telegram/Annie audio delivery path.
+    # Telegram fetches the Annie audio URL directly instead of using a
+    # locally downloaded temporary file.
     thumb = await _download_thumbnail(track.thumbnail)
-    try:
-        path = await annie.prepare_audio(track.source_url or query)
-        suffix = os.path.splitext(path)[1].lower() or ".m4a"
-        filename = f"{track.title[:80] or 'audio'}{suffix}"
-        kwargs = {
-            "audio": InputFile(path, filename=filename),
-            "title": track.title,
-            "performer": track.artist or "Unknown Artist",
-            "write_timeout": 120,
-            "read_timeout": 120,
-            "connect_timeout": 30,
-            "pool_timeout": 30,
-        }
-        if track.duration:
-            kwargs["duration"] = track.duration
-        if thumb:
-            thumb.seek(0)
-            kwargs["thumbnail"] = thumb
+    kwargs = {
+        "audio": annie.audio_url(track.source_url or query),
+        "title": track.title,
+        "performer": track.artist or "Unknown Artist",
+    }
+    if track.duration:
+        kwargs["duration"] = track.duration
+    if thumb:
+        thumb.seek(0)
+        kwargs["thumbnail"] = thumb
 
-        await update.effective_message.reply_audio(**kwargs)
-    finally:
-        if path:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+    await update.effective_message.reply_audio(**kwargs)
 
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
