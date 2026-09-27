@@ -168,8 +168,13 @@ def _start_ui_task(bot, chat_id: int, state):
     )
 
 
-async def _send_now_playing(bot, chat_id, state, old_message=None):
-    """Create the player once, then edit it for subsequent tracks/controls."""
+async def _send_now_playing(bot, chat_id, state, old_message=None, force_new=False):
+    """Create a fresh player card when a new track starts.
+
+    The player card belongs to one track only. During the same track we edit
+    its caption/buttons, but a completed track is never transformed into the
+    next track's card. This keeps artwork and metadata visually consistent.
+    """
     text = _now_text(state)
     position = state.position(asyncio.get_running_loop().time())
     keyboard = player_keyboard(
@@ -178,18 +183,19 @@ async def _send_now_playing(bot, chat_id, state, old_message=None):
         state.current.duration if state.current else None,
     )
 
-    # A transient /play message is not our player message. Delete it once,
-    # then create the persistent premium player message.
+    if force_new:
+        # The caller has already marked the previous card as completed.
+        state.control_message_id = None
+        state.control_is_photo = False
+
     if state.control_message_id is None:
-        if old_message:
+        if old_message and not force_new:
             try:
                 await old_message.delete()
             except Exception:
                 pass
 
         message = None
-        # Telegram can fetch the thumbnail URL itself. This avoids downloading
-        # and converting an image locally on every UI refresh.
         if state.current and state.current.thumbnail:
             try:
                 message = await bot.send_photo(
@@ -201,7 +207,7 @@ async def _send_now_playing(bot, chat_id, state, old_message=None):
                 )
                 state.control_is_photo = True
             except Exception as exc:
-                log.debug("Remote thumbnail send failed: %s", exc)
+                log.debug("Remote thumbnail send failed: %s", safe_exception(exc))
 
         if message is None:
             message = await bot.send_message(
@@ -216,11 +222,53 @@ async def _send_now_playing(bot, chat_id, state, old_message=None):
     else:
         edited = await _edit_control_message(bot, chat_id, state, text=text, keyboard=keyboard)
         if not edited and state.control_message_id is None:
-            # The old player message disappeared. Recreate it transparently.
-            return await _send_now_playing(bot, chat_id, state, old_message=None)
+            return await _send_now_playing(bot, chat_id, state, old_message=None, force_new=False)
 
     _start_ui_task(bot, chat_id, state)
     return state.control_message_id
+
+
+async def _mark_track_completed(bot, chat_id, state, track):
+    """Freeze the current track's player card as a completed card."""
+    message_id = state.control_message_id
+    if not message_id:
+        return
+
+    duration = _format_time(track.duration)
+    text = (
+        "✅ <b>𝗧𝗥𝗔𝗖𝗞 𝗖𝗢𝗠𝗣𝗟𝗘𝗧𝗘𝗗</b>\n\n"
+        f"🎵 <b>{escape(track.title)}</b>\n"
+        f"🎤 {escape(track.artist or 'Unknown Artist')}\n"
+        f"⏱ <b>{duration}</b>\n"
+        f"👤 {escape(track.requested_name)}"
+    )
+
+    async with player_manager.ui_lock(chat_id):
+        if state.control_message_id != message_id:
+            return
+        try:
+            if state.control_is_photo:
+                await bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    caption=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([]),
+                )
+            else:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup([]),
+                )
+        except Exception as exc:
+            if not _message_missing(exc) and "not modified" not in str(exc).lower():
+                log.debug("Could not mark completed player card: %s", safe_exception(exc))
+
+    state.control_message_id = None
+    state.control_is_photo = False
 
 
 async def _ensure_assistant_in_group(bot, chat_id: int):
@@ -300,6 +348,24 @@ def _schedule_preload(chat_id: int):
     )
 
 
+async def _refresh_track_source(track: Track):
+    """Re-resolve a track after a temporary/stale audio-service 404."""
+    info = await resolve(track.query)
+    source = info.get("webpage_url") or track.source_url or track.query
+    if source:
+        track.source_url = source
+    if info.get("title"):
+        track.title = info["title"]
+    if info.get("artist"):
+        track.artist = info["artist"]
+    if info.get("thumbnail"):
+        track.thumbnail = info["thumbnail"]
+    if info.get("duration"):
+        try:
+            track.duration = int(info["duration"])
+        except (TypeError, ValueError):
+            pass
+
 async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
     state = player_manager.get(chat_id)
     previous = state.current
@@ -331,7 +397,18 @@ async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
             state.preload_for = None
 
         if not track.media_path or not os.path.exists(track.media_path):
-            track.media_path = await annie.prepare_audio(track.source_url or track.query)
+            try:
+                track.media_path = await annie.prepare_audio(track.source_url or track.query)
+            except RuntimeError as exc:
+                # The audio service can return 404 when a previously resolved
+                # source has gone stale. Resolve the query again once instead
+                # of immediately killing VC playback.
+                if "HTTP 404" not in str(exc):
+                    raise
+                log.info("Audio source returned 404 for %r; re-resolving", track.query)
+                track.media_path = None
+                await _refresh_track_source(track)
+                track.media_path = await annie.prepare_audio(track.source_url or track.query)
 
         state.playback_path = track.media_path
         await runtime.voice.play(chat_id, track.media_path)
@@ -427,23 +504,17 @@ async def advance_to_next(chat_id: int, bot=None, old_message=None):
     old_playback_path = state.playback_path
     next_track = player_manager.pop_next(chat_id)
 
+    if old_track and bot:
+        await _stop_ui_task(state)
+        await _mark_track_completed(bot, chat_id, state, old_track)
+
     if not next_track:
         await runtime.voice.leave(chat_id)
-        await _stop_ui_task(state)
-
-        # Leave the existing premium player message in place and turn it into
-        # a finished state instead of deleting/re-uploading it.
-        await _edit_control_message(
-            bot, chat_id, state,
-            text="⏹ <b>𝗤𝗨𝗘𝗨𝗘 𝗙𝗜𝗡𝗜𝗦𝗛𝗘𝗗</b>\n\nNo more tracks are waiting.",
-            keyboard=InlineKeyboardMarkup([]),
-        )
-
         state.current = None
         state.paused = False
         state.playback_path = None
-        state.control_message_id = None
-        state.control_is_photo = False
+        state.position_offset = 0.0
+        state.paused_position = 0.0
 
         for path in (old_playback_path, old_track.media_path if old_track else None):
             if path:
@@ -453,7 +524,12 @@ async def advance_to_next(chat_id: int, bot=None, old_message=None):
                     pass
         return False
 
-    await _start_track(chat_id, next_track, replacing=True, bot=bot)
+    try:
+        await _start_track(chat_id, next_track, replacing=True, bot=bot)
+    except Exception:
+        # The old card has already been safely frozen as completed. Do not
+        # overwrite it with an error player card.
+        raise
 
     for path in (old_playback_path, old_track.media_path if old_track else None):
         if path and path != next_track.media_path and path != state.playback_path:
@@ -463,7 +539,7 @@ async def advance_to_next(chat_id: int, bot=None, old_message=None):
                 pass
 
     if bot:
-        await _send_now_playing(bot, chat_id, state, old_message=old_message)
+        await _send_now_playing(bot, chat_id, state, force_new=True)
     _schedule_preload(chat_id)
     return True
 
