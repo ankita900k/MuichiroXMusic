@@ -27,27 +27,39 @@ class AnnieAPI:
         timeout = aiohttp.ClientTimeout(total=600, connect=20, sock_read=120)
         headers = {"User-Agent": "MuichiroMusic/2.0"}
 
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(url, allow_redirects=True) as response:
-                response.raise_for_status()
-                content_type = (response.headers.get("Content-Type") or "").lower()
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(url, allow_redirects=True) as response:
+                    if response.status >= 400:
+                        # Never raise aiohttp's ClientResponseError here: its text can
+                        # contain the full credential-bearing request URL.
+                        raise RuntimeError(f"Audio service returned HTTP {response.status}")
+                    content_type = (response.headers.get("Content-Type") or "").lower()
 
-                if "json" in content_type:
-                    payload = await response.json(content_type=None)
-                    media_url = None
-                    if isinstance(payload, dict):
-                        for key in ("url", "download_url", "audio_url", "stream_url", "link"):
-                            value = payload.get(key)
-                            if isinstance(value, str) and value.startswith(("http://", "https://")):
-                                media_url = value
-                                break
-                    if not media_url:
-                        raise RuntimeError("Annie returned JSON without a playable audio URL")
-                    async with session.get(media_url, allow_redirects=True) as media:
-                        media.raise_for_status()
-                        return await self._save_response(media)
+                    if "json" in content_type:
+                        payload = await response.json(content_type=None)
+                        media_url = None
+                        if isinstance(payload, dict):
+                            for key in ("url", "download_url", "audio_url", "stream_url", "link"):
+                                value = payload.get(key)
+                                if isinstance(value, str) and value.startswith(("http://", "https://")):
+                                    media_url = value
+                                    break
+                        if not media_url:
+                            raise RuntimeError("Audio service returned JSON without a playable audio URL")
+                        async with session.get(media_url, allow_redirects=True) as media:
+                            if media.status >= 400:
+                                raise RuntimeError(f"Audio media request returned HTTP {media.status}")
+                            return await self._save_response(media)
 
-                return await self._save_response(response)
+                    return await self._save_response(response)
+        except RuntimeError:
+            raise
+        except aiohttp.ClientError as exc:
+            # Do not expose the request URL or query parameters in the exception.
+            raise RuntimeError("Audio service request failed. Please try again.") from None
+        except TimeoutError:
+            raise RuntimeError("Audio service timed out. Please try again.") from None
 
     @staticmethod
     def _detect_suffix(content_type: str, head: bytes):

@@ -7,6 +7,8 @@ from pytgcalls import PyTgCalls
 from pytgcalls import filters as tg_filters
 from pytgcalls.types import AudioQuality, MediaStream, StreamEnded
 
+from .security import safe_exception
+
 log = logging.getLogger(__name__)
 
 
@@ -29,6 +31,7 @@ class VoiceChat:
         self.on_ended = None
         self.started = False
         self._dialogs_warmed = False
+        self._joined_groups: set[int] = set()
 
     async def start(self):
         if self.started:
@@ -64,7 +67,7 @@ class VoiceChat:
                         found = True
                         break
         except Exception as exc:
-            log.warning("Could not warm Pyrogram peer cache: %s", exc)
+            log.warning("Could not warm Pyrogram peer cache (%s)", safe_exception(exc))
             if target_chat_id is None:
                 return
 
@@ -104,6 +107,11 @@ class VoiceChat:
         if not invite_link:
             raise RuntimeError("No invite link was provided for the assistant")
 
+        # Fast path: once this group has been verified during this process,
+        # avoid a Telegram membership lookup for every queued track.
+        if chat_id in self._joined_groups:
+            return False
+
         # Check membership first. This also warms Pyrogram's peer cache when
         # the assistant is already present.
         try:
@@ -111,9 +119,10 @@ class VoiceChat:
             status = getattr(member, "status", "")
             if status not in {"left", "kicked", "banned"}:
                 await self._warm_dialog_cache(chat_id)
+                self._joined_groups.add(chat_id)
                 return False
         except Exception as exc:
-            log.debug("Assistant membership check for %s failed: %s", chat_id, exc)
+            log.debug("Assistant membership check for %s failed (%s)", chat_id, safe_exception(exc))
 
         log.info("Assistant is not in %s; joining with the generated invite link", chat_id)
         try:
@@ -125,16 +134,17 @@ class VoiceChat:
                 status = getattr(member, "status", "")
                 if status not in {"left", "kicked", "banned"}:
                     await self._warm_dialog_cache(chat_id)
+                    self._joined_groups.add(chat_id)
                     return True
             except Exception:
                 pass
             raise RuntimeError(
-                "The music assistant could not join this group using the generated invite link. "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+                "The music assistant could not join this group using the generated invite link."
+            ) from None
 
         # Force the joined group's peer into the local cache before PyTgCalls.
         await self._warm_dialog_cache(chat_id)
+        self._joined_groups.add(chat_id)
         return True
 
     async def play(self, chat_id: int, path: str):
@@ -162,7 +172,7 @@ class VoiceChat:
         try:
             await self.calls.leave_call(chat_id)
         except Exception as exc:
-            log.warning("Music VC leave failed for %s: %s", chat_id, exc)
+            log.warning("Music VC leave failed for %s (%s)", chat_id, safe_exception(exc))
 
     def register_stream_end(self, callback):
         self.on_ended = callback
@@ -183,6 +193,7 @@ class VoiceChat:
 
         self.started = False
         self._dialogs_warmed = False
+        self._joined_groups.clear()
 
     def _active_chat_ids(self):
         try:
