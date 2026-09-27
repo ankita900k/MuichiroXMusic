@@ -1,17 +1,16 @@
 FROM python:3.13-slim
 
-# Install system dependencies:
-# - gcc/build-essential: required to build tgcrypto
+# System dependencies:
+# - build-essential: required to build tgcrypto when a prebuilt wheel is unavailable
 # - stockfish: chess engine
-# - ffmpeg: audio conversion/playback
+# directly to PyTgCalls, so no local audio conversion/transcoding is used.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         stockfish \
-        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Make sure Stockfish location is available
+# Make sure Stockfish is available to the application
 ENV PATH="/usr/games:${PATH}"
 
 WORKDIR /app
