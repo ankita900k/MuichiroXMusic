@@ -397,7 +397,18 @@ async def _send_audio(query, track, update):
             raise RuntimeError("Downloaded media contains no audio track")
         normalized = await asyncio.to_thread(_convert_to_mp3, audio_path)
 
-        await update.effective_message.reply_audio(
+        # Do NOT use effective_message.reply_audio() here. That creates a
+        # Telegram reply relationship with the original command message.
+        # If that message was deleted/expired/inaccessible, Telegram raises
+        # "BadRequest: Message to be replied not found" and audio delivery
+        # fails even though the audio itself is valid. Send directly to the
+        # chat instead.
+        chat = update.effective_chat
+        if not chat:
+            raise RuntimeError("Audio destination chat is unavailable")
+
+        await update.get_bot().send_audio(
+            chat_id=chat.id,
             audio=normalized,
             title=track.title,
             performer=track.artist or "Unknown Artist",
