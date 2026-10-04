@@ -1,9 +1,5 @@
 FROM python:3.13-slim
 
-# Install system dependencies:
-# - gcc/build-essential: required to build tgcrypto
-# - stockfish: chess engine
-# - ffmpeg: audio conversion/playback
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -11,7 +7,6 @@ RUN apt-get update \
         ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Make sure Stockfish location is available
 ENV PATH="/usr/games:${PATH}"
 
 WORKDIR /app

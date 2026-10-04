@@ -70,16 +70,8 @@ API_KEY
 API_ID
 API_HASH
 SESSION_STRING
-ANNIE_API_KEY
-ANNIE_BASE_URL
 WEBHOOK_URL
 WEBHOOK_SECRET
-```
-
-`ANNIE_BASE_URL` can remain:
-
-```text
-https://api.alonexraj.shop
 ```
 
 Set `WEBHOOK_URL` to the public URL of the Render service, for example:

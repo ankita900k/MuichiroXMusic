@@ -298,7 +298,7 @@ async def button_callback(
                 InlineKeyboardButton(
                     " 🎵 𝐌𝐮𝐬𝐢𝐜",
                     callback_data="help_music",
-                    style="primary"
+                    style="success"
                 )
             ],
             [
@@ -318,10 +318,10 @@ async def button_callback(
 
 ✨ <i>Explore my commands & features</i>
 
- <b>𝐆𝐂 𝐌𝐚𝐧𝐚𝐠𝐞𝐦𝐞𝐧𝐭</b>
+🔵 <b>𝐆𝐂 𝐌𝐚𝐧𝐚𝐠𝐞𝐦𝐞𝐧𝐭</b>
 <i>Moderation • Admin • Welcome</i>
 
- <b>𝐔𝐭𝐢𝐥𝐢𝐭𝐲 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬</b>
+🟢 <b>𝐔𝐭𝐢𝐥𝐢𝐭𝐲 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬</b>
 <i>Chat • Tools • Games • More</i>
 
 🎵 <b>𝐌𝐮𝐬𝐢𝐜</b>
@@ -396,7 +396,7 @@ async def button_callback(
 
 ━━━━━━━━━━━━━━━━━━━━
 
-🎛️ <i>Interactive player • Seek • Queue • Voice Chat</i>
+🎛️ <i>Live tracker • Queue • Voice Chat</i>
 
 ✨ <b>Choose a section below.</b>
 """,
@@ -435,9 +435,8 @@ async def button_callback(
 
 🎧 Interactive Now Playing panel
 
-⏯️ Play / Pause   ⏮️ Previous   ⏭️ Next
-⏪ 10s   10s ⏩   🔀 Shuffle   🔁 Repeat
-📋 Queue   🎚️ Interactive seeking
+⏹️ Stop   ⏪ 10s   ⏸️ Pause   10s ⏩   🔀 Shuffle
+📋 Queue   📈 Live button tracker
 
 ✨ Each new track gets its own fresh player card and artwork.
 """,
@@ -473,9 +472,9 @@ async def button_callback(
         ⏯️ <b>𝐂𝐨𝐧𝐭𝐫𝐨𝐥𝐬</b>
 ╰━━━━━━━━━━━━━━━━━━━━╯
 
-⏯️ Play / Pause
-⏪ 10s / 10s ⏩ Seek
-🔀 Shuffle / 🔁 Repeat
+⏹️ Stop / ⏪ 10s / ⏸️ Pause / 10s ⏩
+🔀 Shuffle
+📈 Live tracker updates on the player buttons
 📋 Queue / ⏭️ Next
 
 🎵 <i>Fast, clean and built for voice chat.</i>
@@ -1938,7 +1937,7 @@ async def help_command(
             ),
             InlineKeyboardButton(
                 " 📖 𝐅𝐮𝐥𝐥 𝐆𝐮𝐢𝐝𝐞",
-                url="https://t.me/MuichiroUpdates/27",
+                url="https://t.me/MuichiroUpdates/24",
                 style="primary"
             )
         ]

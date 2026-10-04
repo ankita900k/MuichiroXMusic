@@ -21,10 +21,6 @@ services:
         sync: false
       - key: SESSION_STRING
         sync: false
-      - key: ANNIE_API_KEY
-        sync: false
-      - key: ANNIE_BASE_URL
-        value: https://api.alonexraj.shop
       - key: WEBHOOK_URL
         sync: false
       - key: WEBHOOK_SECRET

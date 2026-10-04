@@ -1,5 +1,5 @@
 import asyncio
-
+from contextlib import asynccontextmanager
 from .models import PlayerState, Track
 
 
@@ -17,6 +17,12 @@ class PlayerManager:
 
     def ui_lock(self, chat_id: int) -> asyncio.Lock:
         return self.ui_locks.setdefault(chat_id, asyncio.Lock())
+
+    @asynccontextmanager
+    async def locked(self, chat_id: int):
+        lock = self.lock(chat_id)
+        async with lock:
+            yield self.get(chat_id)
 
     def enqueue(self, chat_id: int, track: Track) -> int:
         state = self.get(chat_id)

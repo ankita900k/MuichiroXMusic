@@ -1,56 +1,80 @@
-"""Small helpers for keeping secrets and Telegram errors out of user messages/logs."""
-import os
-import re
-from urllib.parse import quote, urlsplit, urlunsplit, parse_qsl, urlencode
+"""
+Security and error-handling helpers for the Muichiro music system.
+"""
 
-_SECRET_ENV_NAMES = (
-    "ANNIE_API_KEY",
-    "API_HASH",
-    "SESSION_STRING",
-    "BOT_TOKEN",
-    "TELEGRAM_BOT_TOKEN",
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any
+
+
+# Patterns that may contain sensitive information.
+_SENSITIVE_PATTERNS = (
+    re.compile(r"(?i)(bot_token|api[_-]?key|api[_-]?hash|session[_-]?string|password|secret)\s*[=:]\s*\S+"),
+    re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{20,}\b"),  # Telegram bot-token-like values
 )
 
 
-def redact_secrets(value: object) -> str:
-    """Return text with known configured secrets and common token forms masked."""
-    text = str(value or "")
+def safe_exception(exc: BaseException | Any) -> str:
+    """
+    Return a safe, sanitized representation of an exception.
 
-    # Replace configured secret values wherever they appear, including URL-encoded forms.
-    for name in _SECRET_ENV_NAMES:
-        secret = os.getenv(name, "")
-        if secret:
-            text = text.replace(secret, "[REDACTED]")
-            try:
-                text = text.replace(quote(secret, safe=""), "[REDACTED]")
-            except Exception:
-                pass
-
-    # Never expose query-string credentials even if the secret wasn't loaded in this process.
+    This is intended for logs so that accidental secrets/tokens in
+    exception messages are not exposed.
+    """
     try:
-        parts = urlsplit(text)
-        if parts.scheme and parts.netloc and parts.query:
-            pairs = parse_qsl(parts.query, keep_blank_values=True)
-            safe_pairs = []
-            for key, val in pairs:
-                if key.lower() in {"api_key", "apikey", "api-hash", "api_hash", "token", "access_token"}:
-                    val = "[REDACTED]"
-                safe_pairs.append((key, val))
-            text = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(safe_pairs), parts.fragment))
+        message = str(exc).strip()
     except Exception:
-        pass
+        return exc.__class__.__name__ if isinstance(exc, BaseException) else "Unknown error"
 
-    # Common Telegram bot-token shape.
-    text = re.sub(r"\b\d{7,12}:[A-Za-z0-9_-]{25,}\b", "[REDACTED_TOKEN]", text)
-    return text
+    if not message:
+        return exc.__class__.__name__ if isinstance(exc, BaseException) else "Unknown error"
+
+    for pattern in _SENSITIVE_PATTERNS:
+        message = pattern.sub("[REDACTED]", message)
+
+    # Avoid dumping huge exception messages into logs.
+    if len(message) > 1000:
+        message = message[:1000] + "..."
+
+    return message
 
 
-def safe_exception(exc: BaseException) -> str:
-    """Short, non-secret diagnostic suitable for a log or controlled admin log."""
-    return redact_secrets(f"{type(exc).__name__}: {exc}")
+def user_error_message(exc: BaseException | Any) -> str:
+    """
+    Convert an internal exception into a short, user-friendly message.
+
+    Internal details are intentionally not exposed to Telegram users.
+    """
+    if exc is None:
+        return "Something went wrong. Please try again."
+
+    name = exc.__class__.__name__.lower() if isinstance(exc, BaseException) else ""
+
+    if "timeout" in name:
+        return "The request timed out. Please try again."
+
+    if "forbidden" in name:
+        return "I don't have permission to perform that action."
+
+    if "notfound" in name or "not_found" in name:
+        return "The requested item could not be found."
+
+    if "network" in name or "connection" in name:
+        return "A network error occurred. Please try again."
+
+    return "Something went wrong while processing your request. Please try again."
 
 
-def user_error_message(exc: BaseException, fallback: str) -> str:
-    """Return a friendly user-facing error without implementation details or secrets."""
-    # Deliberately do not echo exception text into Telegram.
-    return fallback
+def log_exception(
+    logger: logging.Logger,
+    message: str,
+    exc: BaseException | Any,
+    *,
+    level: int = logging.ERROR,
+) -> None:
+    """
+    Convenience helper for safely logging an exception.
+    """
+    logger.log(level, "%s: %s", message, safe_exception(exc))

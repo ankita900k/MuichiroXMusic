@@ -53,3 +53,5 @@ uvicorn[standard]>=0.34
 pyrogram>=2.0.106
 tgcrypto>=1.2
 py-tgcalls==2.2.0
+
+yt-dlp==2026.8.19
