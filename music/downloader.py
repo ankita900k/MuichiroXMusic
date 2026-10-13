@@ -7,6 +7,7 @@ never blocks while extracting or downloading media.
 import asyncio
 import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,14 @@ from typing import Any
 import yt_dlp
 
 log = logging.getLogger(__name__)
+
+# These diagnostics appear in Render logs so deployment/runtime problems can be
+# spotted without opening a shell or typing commands in the Render dashboard.
+try:
+    from yt_dlp.version import __version__ as _YTDLP_VERSION
+except Exception:
+    _YTDLP_VERSION = "unknown"
+log.info("Muichiro music downloader: yt-dlp=%s, Deno=%s", _YTDLP_VERSION, shutil.which("deno") or "not found")
 
 
 def _base_opts() -> dict[str, Any]:

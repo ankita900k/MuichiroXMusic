@@ -36,6 +36,22 @@ def _message_missing(exc: BaseException) -> bool:
     return any(x in text for x in ("message to edit not found", "message not found", "message_id_invalid", "have no access"))
 
 
+def _friendly_music_error(exc: BaseException, action: str) -> str:
+    """Return a useful user-facing error without exposing a traceback or secrets."""
+    detail = str(exc).lower()
+    if "sign in to confirm you're not a bot" in detail or "confirm you're not a bot" in detail:
+        return (
+            "⚠️ <b>YouTube blocked this request.</b>\n"
+            "Muichiro is running without cookies or account sessions, as configured. "
+            "Try another track or try again later; this video/server request may be restricted."
+        )
+    if "unsupported url" in detail:
+        return "❌ <b>Unsupported music link.</b>\nTry a supported public link or search by song name."
+    if "timed out" in detail or "timeout" in detail:
+        return f"⏳ <b>{action} timed out.</b>\nPlease try again in a moment."
+    return f"❌ <b>{action} failed.</b>\nPlease try another track or try again later."
+
+
 def _position(state) -> float:
     if not state.current:
         return 0.0
@@ -449,10 +465,10 @@ async def play_command(update, context):
                 return
             await _start_track(chat_id, track, bot=context.bot)
             await _send_now_playing(context.bot, chat_id, state, replace_message=status)
-    except Exception:
+    except Exception as exc:
         log.exception("VC playback failed")
         try:
-            await status.edit_text("❌ <b>Playback failed.</b>\nPlease try another search.", parse_mode=ParseMode.HTML)
+            await status.edit_text(_friendly_music_error(exc, "Playback"), parse_mode=ParseMode.HTML)
         except Exception:
             pass
 
@@ -473,10 +489,10 @@ async def audio_command(update, context):
             await status.delete()
         except Exception:
             pass
-    except Exception:
+    except Exception as exc:
         log.exception("Audio delivery failed")
         try:
-            await status.edit_text("❌ <b>Audio delivery failed.</b>\nPlease try again in a moment.", parse_mode=ParseMode.HTML)
+            await status.edit_text(_friendly_music_error(exc, "Audio delivery"), parse_mode=ParseMode.HTML)
         except Exception:
             pass
 

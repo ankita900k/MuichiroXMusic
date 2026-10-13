@@ -19,7 +19,7 @@ music/VC system from the MuichiroXMusic project without introducing aiogram.
 - Inline player buttons
 - YouTube thumbnail on Now Playing
 - Local temporary audio files for VC playback
-- No yt-dlp
+- yt-dlp with EJS + Deno support (no cookies or browser sessions)
 - Pyrogram user session + PyTgCalls for Telegram voice chats
 
 ## Does it need a virtual environment?
@@ -49,16 +49,14 @@ layer needs.
 
 ## Render Web Service
 
-Use:
+Use a Render **Web Service with Docker runtime** so Render builds the included
+`Dockerfile`. The image installs FFmpeg, Deno, and the `unzip` dependency required
+by the Deno installer. The included `render.yaml` points to this Dockerfile.
 
-```text
-Runtime: Python
-Build Command: pip install -r requirements.txt
-Start Command: uvicorn webhook:app --host 0.0.0.0 --port $PORT
-Health Check Path: /health
-```
-
-The included `render.yaml` contains these settings.
+No commands need to be typed into Render's shell. Push the changed files to the
+connected GitHub branch and redeploy. If an existing service was created as a
+native Python service, changing `render.yaml` alone may not change that service's
+runtime; check the service's Runtime setting and use Docker for this build.
 
 ### Required environment variables
 

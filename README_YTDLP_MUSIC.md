@@ -26,3 +26,11 @@ FFmpeg is intentionally kept in the Docker image because the player uses it for 
 ## YouTube extraction reliability
 
 This build enables yt-dlp's supported EJS challenge-solving path with Deno and the matching `yt-dlp-ejs` package. It does not use browser cookies, account sessions, or public Gist credentials. YouTube can still change server-side access requirements, so extraction cannot be guaranteed for every video or network.
+
+
+## Render deployment note
+
+Use the Docker runtime for this project so Render installs FFmpeg and Deno from
+the included Dockerfile. The Dockerfile includes `unzip`, which the Deno install
+script needs on slim Linux images. If Render still reports that Deno is missing,
+check whether the service is using the Docker runtime rather than native Python.
