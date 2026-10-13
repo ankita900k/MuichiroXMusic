@@ -3,16 +3,18 @@ FROM python:3.13-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
-        curl \
-        ca-certificates \
         stockfish \
         ffmpeg \
+        curl \
+        unzip \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# yt-dlp uses Deno + yt-dlp-ejs for YouTube JavaScript challenges.
 ENV DENO_INSTALL=/opt/deno
 ENV PATH="/opt/deno/bin:/usr/games:${PATH}"
-RUN curl -fsSL https://deno.land/install.sh | sh
+
+RUN curl -fsSL https://deno.land/install.sh | sh \
+    && deno --version
 
 WORKDIR /app
 
