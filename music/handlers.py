@@ -3,6 +3,7 @@ import io
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 import aiohttp
@@ -298,6 +299,50 @@ async def _prepare_track(track: Track):
     return track.media_path
 
 
+async def _ensure_assistant_in_group(bot, chat_id: int):
+    """Automatically join the Pyrogram assistant using a temporary invite.
+
+    Invite links are generated per group at runtime; no fixed invite URL or
+    extra environment variable is needed. The bot must be an admin allowed
+    to invite users via links.
+    """
+    voice = runtime.voice
+    if voice is None:
+        raise RuntimeError("Music voice layer is not initialized")
+
+    # Fast path: assistant is already a member.
+    try:
+        member = await voice.client.get_chat_member(chat_id, "me")
+        status = getattr(member, "status", "")
+        if status not in {"left", "kicked", "banned"}:
+            await voice._warm_dialog_cache(chat_id)
+            return
+    except Exception as exc:
+        log.debug("Assistant membership check for %s failed: %s", chat_id, exc)
+
+    try:
+        invite = await bot.create_chat_invite_link(
+            chat_id=chat_id,
+            name="Muichiro music assistant",
+            expire_date=datetime.now(timezone.utc) + timedelta(minutes=5),
+            member_limit=1,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "The bot could not create an invite link for the music assistant. "
+            "Make sure the bot is an administrator with permission to invite users via link."
+        ) from exc
+
+    try:
+        await voice.ensure_joined(chat_id, invite.invite_link)
+    finally:
+        # Revoke the temporary link after the join attempt.
+        try:
+            await bot.revoke_chat_invite_link(chat_id, invite.invite_link)
+        except Exception:
+            log.debug("Could not revoke temporary assistant invite in %s", chat_id, exc_info=True)
+
+
 async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
     state = player_manager.get(chat_id)
     previous = state.current
@@ -321,6 +366,8 @@ async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
                 pass
         state.preload_task = None
         state.preload_for = None
+        if bot is not None:
+            await _ensure_assistant_in_group(bot, chat_id)
         await _prepare_track(track)
         state.playback_path = track.media_path
         await runtime.voice.play(chat_id, track.media_path)
