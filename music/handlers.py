@@ -12,7 +12,7 @@ from telegram.error import TimedOut
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from . import runtime
-from .downloader import cleanup_media, download_audio, resolve
+from .downloader import HepMusicError, cleanup_media, download_audio, resolve
 from .manager import player_manager
 from .models import Track
 from .ui import player_keyboard
@@ -37,19 +37,63 @@ def _message_missing(exc: BaseException) -> bool:
 
 
 def _friendly_music_error(exc: BaseException, action: str) -> str:
-    """Return a useful user-facing error without exposing a traceback or secrets."""
+    """Map provider/Telegram failures to distinct, safe chat replies."""
     detail = str(exc).lower()
-    if "sign in to confirm you're not a bot" in detail or "confirm you're not a bot" in detail:
+    markers = (
+        "user_banned_in_channel", "user was kicked", "user_banned", "banned from the chat",
+        "banned from the channel", "kicked from the supergroup", "kicked from the group",
+        "participant_id_invalid", "user_restricted",
+    )
+    if any(marker in detail for marker in markers):
         return (
-            "⚠️ <b>YouTube blocked this request.</b>\n"
-            "Muichiro is running without cookies or account sessions, as configured. "
-            "Try another track or try again later; this video/server request may be restricted."
+            "⚠️ <b>Muichiro assistant is banned in your chat.</b>\n"
+            "Please resolve the ban first, then try playback again."
         )
+    if any(marker in detail for marker in ("chat_admin_required", "chat_write_forbidden", "channel_private", "user_not_participant", "peer_id_invalid", "not a participant", "not a member")):
+        return (
+            "⚠️ <b>Muichiro assistant cannot access this chat or voice chat.</b>\n"
+            "Please add/unban the assistant and check its group/voice-chat permissions, then try again."
+        )
+    if isinstance(exc, HepMusicError):
+        status = getattr(exc, "status_code", 0)
+        if "hep_music_api_key is not configured" in detail:
+            return "⚙️ <b>Muichiro music API isn't configured.</b>\nPlease inform the owner @nyxluciferx02."
+        if status == 401:
+            return "🔑 <b>Hep.gg rejected Muichiro's API key.</b>\nPlease inform the owner @nyxluciferx02."
+        if status == 404:
+            return "🔎 <b>Hep.gg couldn't find this track.</b>\nTry another song or a supported public media link."
+        if status == 422:
+            return "🚫 <b>Hep.gg couldn't fetch this media.</b>\nIt may be unavailable or restricted. Please try another track."
+        if status == 400:
+            return "🔗 <b>Hep.gg couldn't use this link.</b>\nTry a supported public video/audio link or search by song name."
+        return "⚠️ <b>Playback failed on Hep.gg.</b>\nPlease try again later or inform the owner @nyxluciferx02."
+    if "sign in to confirm you're not a bot" in detail or "confirm you're not a bot" in detail:
+        return "⚠️ <b>The music source rejected this request.</b>\nTry a supported public link or another track."
     if "unsupported url" in detail:
         return "❌ <b>Unsupported music link.</b>\nTry a supported public link or search by song name."
     if "timed out" in detail or "timeout" in detail:
-        return f"⏳ <b>{action} timed out.</b>\nPlease try again in a moment."
-    return f"❌ <b>{action} failed.</b>\nPlease try another track or try again later."
+        return f"⏳ <b>{action} timed out.</b>\nPlease try again later or inform the owner @nyxluciferx02."
+    if "forbidden" in detail or "voice chat" in detail or "group call" in detail or "join the voice chat" in detail:
+        return (
+            "⚠️ <b>Muichiro assistant couldn't access the voice chat.</b>\n"
+            "Please make sure the assistant is in the group and allowed to join the voice chat."
+        )
+    return f"⚠️ <b>{action} failed.</b>\nPlease try again later or inform the owner @nyxluciferx02."
+
+
+async def _report_failure(message, status_message, text: str):
+    """Edit the status reply when possible, otherwise send a fresh reply."""
+    if status_message:
+        try:
+            await status_message.edit_text(text, parse_mode=ParseMode.HTML)
+            return
+        except Exception:
+            pass
+    if message:
+        try:
+            await message.reply_text(text, parse_mode=ParseMode.HTML)
+        except Exception:
+            log.debug("Could not send user-facing music failure reply", exc_info=True)
 
 
 def _position(state) -> float:
@@ -228,6 +272,9 @@ async def _make_track(update: Update, query: str) -> Track:
         duration=info.get("duration"),
         source_stream_url=info.get("stream_url"),
         video_id=info.get("id"),
+        media_path=info.get("media_path"),
+        provider=info.get("provider") or "hep_library",
+        isrc=info.get("isrc"),
     )
 
 
@@ -239,8 +286,15 @@ async def _prepare_track(track: Track):
         "query": track.query,
         "title": track.title,
         "id": track.video_id,
+        "isrc": track.isrc,
+        "provider": track.provider,
+        "media_path": track.media_path,
     }
     track.media_path = await download_audio(info)
+    track.title = info.get("title") or track.title
+    track.artist = info.get("artist") or track.artist
+    track.duration = info.get("duration") or track.duration
+    track.thumbnail = info.get("thumbnail") or track.thumbnail
     return track.media_path
 
 
@@ -374,7 +428,7 @@ async def _relative_seek(chat_id: int, delta: float):
     # Build a fresh segment. FFmpeg remains installed for this lightweight
     # relative seek only; normal playback/downloads do not transcode.
     import tempfile
-    fd, candidate = tempfile.mkstemp(prefix="muichiro_seek_", suffix=".m4a")
+    fd, candidate = tempfile.mkstemp(prefix="muichiro_seek_", suffix=".mp3")
     os.close(fd)
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-y", "-v", "error", "-ss", f"{target:.2f}", "-i", track.media_path,
@@ -467,10 +521,7 @@ async def play_command(update, context):
             await _send_now_playing(context.bot, chat_id, state, replace_message=status)
     except Exception as exc:
         log.exception("VC playback failed")
-        try:
-            await status.edit_text(_friendly_music_error(exc, "Playback"), parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
+        await _report_failure(message, status, _friendly_music_error(exc, "Playback"))
 
 
 async def audio_command(update, context):
@@ -491,10 +542,7 @@ async def audio_command(update, context):
             pass
     except Exception as exc:
         log.exception("Audio delivery failed")
-        try:
-            await status.edit_text(_friendly_music_error(exc, "Audio delivery"), parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
+        await _report_failure(message, status, _friendly_music_error(exc, "Audio delivery"))
 
 
 async def queue_command(update, context):
@@ -523,9 +571,9 @@ async def skip_command(update, context):
         try:
             ok = await _advance(chat_id, context.bot)
             await update.effective_message.reply_text("⏭ <b>Skipped.</b>" if ok else "⏹ <b>Queue finished.</b>", parse_mode=ParseMode.HTML)
-        except Exception:
+        except Exception as exc:
             log.exception("Skip failed")
-            await update.effective_message.reply_text("❌ Could not start the next track.")
+            await update.effective_message.reply_text(_friendly_music_error(exc, "Skip"), parse_mode=ParseMode.HTML)
 
 
 async def pause_command(update, context):
@@ -620,9 +668,13 @@ async def callback(update, context):
             try:
                 ok = await _advance(chat_id, context.bot)
                 await call.answer("⏭ Skipped" if ok else "⏹ Queue finished")
-            except Exception:
+            except Exception as exc:
                 log.exception("Callback skip failed")
                 await call.answer("Could not start next track.", show_alert=True)
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=_friendly_music_error(exc, "Playback"), parse_mode=ParseMode.HTML)
+                except Exception:
+                    log.debug("Could not send callback failure explanation", exc_info=True)
             return
 
         if action == "stop":
@@ -676,9 +728,13 @@ async def on_stream_end(chat_id: int, bot):
             return
         try:
             await _advance(chat_id, bot)
-        except Exception:
+        except Exception as exc:
             log.exception("Failed to auto-play next track in chat %s", chat_id)
             cleanup_media(state.playback_path)
             state.current = None
             state.paused = False
             state.playback_path = None
+            try:
+                await bot.send_message(chat_id=chat_id, text=_friendly_music_error(exc, "Playback"), parse_mode=ParseMode.HTML)
+            except Exception:
+                log.debug("Could not send auto-next failure explanation", exc_info=True)

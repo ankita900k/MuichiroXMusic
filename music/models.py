@@ -15,6 +15,8 @@ class Track:
     media_path: Optional[str] = None
     source_stream_url: Optional[str] = None
     video_id: Optional[str] = None
+    provider: str = "hep_library"
+    isrc: Optional[str] = None
 
 
 @dataclass

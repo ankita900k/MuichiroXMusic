@@ -1,139 +1,334 @@
-"""Fast, cookie-free yt-dlp backend for Muichiro Music.
+"""Hep.gg-backed audio provider for Muichiro Music.
 
-No browser cookies, cookie files, login sessions, or account credentials are
-read by this module. yt-dlp runs in worker threads so the Telegram event loop
-never blocks while extracting or downloading media.
+Uses Hep.gg's documented Music API. Search-by-name resolves through the Hep.gg
+music library; a supported public media URL uses the unified /media endpoint.
+Audio is saved as MP3 for both Telegram delivery and PyTgCalls playback.
 """
+from __future__ import annotations
+
 import asyncio
+import email.message
 import logging
 import os
-import shutil
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
-import yt_dlp
+import aiohttp
 
 log = logging.getLogger(__name__)
 
-# These diagnostics appear in Render logs so deployment/runtime problems can be
-# spotted without opening a shell or typing commands in the Render dashboard.
-try:
-    from yt_dlp.version import __version__ as _YTDLP_VERSION
-except Exception:
-    _YTDLP_VERSION = "unknown"
-log.info("Muichiro music downloader: yt-dlp=%s, Deno=%s", _YTDLP_VERSION, shutil.which("deno") or "not found")
+HEP_BASE_URL = os.getenv("HEP_MUSIC_BASE_URL", "https://music.jakeypri.me").rstrip("/")
+HEP_API_KEY = os.getenv("HEP_MUSIC_API_KEY", "").strip()
+CONNECT_TIMEOUT = 15
+REQUEST_TIMEOUT = 240
 
 
-def _base_opts() -> dict[str, Any]:
-    return {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "cookiefile": None,
-        "cachedir": False,
-        # yt-dlp EJS: enable a supported JavaScript runtime for YouTube
-        # challenge solving. No browser cookies or account sessions are read.
-        "js_runtimes": {"deno": {}},
-        "retries": 2,
-        "fragment_retries": 2,
-        "file_access_retries": 2,
-        "socket_timeout": 15,
-        "concurrent_fragment_downloads": 4,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
-        },
-    }
+class HepMusicError(RuntimeError):
+    """A safe, classified Hep.gg API error."""
+
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message or "Hep.gg request failed")
+        self.status_code = status_code
+        self.provider = "hep.gg"
 
 
-def _normalise_info(ydl: yt_dlp.YoutubeDL, info: dict[str, Any]) -> dict[str, Any]:
-    if info.get("_type") == "playlist":
-        entries = [e for e in (info.get("entries") or []) if e]
-        info = entries[0] if entries else info
-
-    title = info.get("title") or "Unknown Track"
-    artist = info.get("artist") or info.get("uploader") or info.get("channel") or "Unknown Artist"
-    duration = info.get("duration")
-    try:
-        duration = int(duration) if duration else None
-    except (TypeError, ValueError):
-        duration = None
-
-    return {
-        "id": info.get("id"),
-        "title": title,
-        "artist": artist,
-        "webpage_url": info.get("webpage_url") or info.get("original_url") or info.get("url"),
-        "thumbnail": info.get("thumbnail"),
-        "duration": duration,
-        "stream_url": info.get("url"),
-    }
+def _require_key() -> str:
+    # Read lazily because bot.py calls load_dotenv() after importing handlers.
+    key = (os.getenv("HEP_MUSIC_API_KEY") or HEP_API_KEY).strip()
+    if not key:
+        raise HepMusicError(0, "HEP_MUSIC_API_KEY is not configured")
+    return key
 
 
-def _extract_sync(query: str) -> dict[str, Any]:
-    target = query.strip()
-    if not target:
-        raise ValueError("Empty music query")
-    if not target.startswith(("http://", "https://")):
-        target = f"ytsearch1:{target}"
-
-    opts = _base_opts()
-    opts.update({
-        "skip_download": True,
-        "extract_flat": False,
-    })
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(target, download=False)
-        if not info:
-            raise RuntimeError("yt-dlp returned no result")
-        return _normalise_info(ydl, info)
+def _base_url() -> str:
+    return (os.getenv("HEP_MUSIC_BASE_URL") or HEP_BASE_URL).rstrip("/")
 
 
-async def resolve(query: str) -> dict[str, Any]:
-    return await asyncio.to_thread(_extract_sync, query)
+def _headers() -> dict[str, str]:
+    return {"X-API-Key": _require_key(), "User-Agent": "MuichiroMusic/1.0"}
 
 
-def _download_sync(info: dict[str, Any]) -> str:
-    source = info.get("webpage_url") or info.get("original_url") or info.get("query")
-    if not source:
-        raise RuntimeError("No downloadable source URL was resolved")
+def _timeout() -> aiohttp.ClientTimeout:
+    return aiohttp.ClientTimeout(total=REQUEST_TIMEOUT, connect=CONNECT_TIMEOUT, sock_read=180)
 
-    root = Path(tempfile.mkdtemp(prefix="muichiro_ytdlp_"))
-    outtmpl = str(root / "track.%(ext)s")
-    opts = _base_opts()
-    opts.update({
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
-        "outtmpl": outtmpl,
-        "paths": {"home": str(root)},
-        "prefer_ffmpeg": True,
-        "keepvideo": False,
-    })
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([source])
-        candidates = [p for p in root.iterdir() if p.is_file() and p.stat().st_size > 1024]
-        if not candidates:
-            raise RuntimeError("yt-dlp finished without producing an audio file")
-        return str(max(candidates, key=lambda p: p.stat().st_size))
-    except Exception:
-        for p in root.glob("*"):
-            try:
-                p.unlink()
-            except OSError:
-                pass
+def _error_message(payload: Any, fallback: str) -> str:
+    if isinstance(payload, dict):
+        for key in ("error", "message", "details", "hint"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:400]
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return _error_message(data, fallback)
+    return fallback
+
+
+async def _raise_response_error(response: aiohttp.ClientResponse) -> None:
+    body = await response.read()
+    message = f"Hep.gg returned HTTP {response.status}"
+    if body:
         try:
-            root.rmdir()
-        except OSError:
-            pass
+            import json
+            payload = json.loads(body.decode("utf-8", errors="replace"))
+            message = _error_message(payload, message)
+        except Exception:
+            # Do not echo arbitrary upstream HTML or large error bodies to users/logs.
+            message = message
+    raise HepMusicError(response.status, message)
+
+
+def _unwrap_search(payload: Any) -> list[dict[str, Any]]:
+    """Accept the documented search response and common envelope variants."""
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in ("results", "tracks", "items", "matches", "songs"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [x for x in value if isinstance(x, dict)]
+        if isinstance(value, dict):
+            found = _unwrap_search(value)
+            if found:
+                return found
+
+    data = payload.get("data")
+    if data is not None:
+        found = _unwrap_search(data)
+        if found:
+            return found
+
+    if any(payload.get(k) for k in ("isrc", "ISRC", "title", "name")):
+        return [payload]
+    return []
+
+
+def _candidate_value(item: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _duration_seconds(item: dict[str, Any]) -> int | None:
+    raw = _candidate_value(item, "duration", "duration_seconds", "length")
+    if raw is None:
+        raw = item.get("duration_ms")
+        if raw is not None:
+            try:
+                return max(1, int(float(raw) / 1000))
+            except (TypeError, ValueError):
+                return None
+    try:
+        value = int(float(raw))
+        return value if value > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _content_filename(response: aiohttp.ClientResponse) -> str | None:
+    disposition = response.headers.get("Content-Disposition", "")
+    if not disposition:
+        return None
+    try:
+        msg = email.message.Message()
+        msg["content-disposition"] = disposition
+        filename = msg.get_filename()
+        return unquote(filename) if filename else None
+    except Exception:
+        match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)', disposition, re.I)
+        return unquote(match.group(1)) if match else None
+
+
+def _metadata_from_response(response: aiohttp.ClientResponse, fallback: str) -> tuple[str, str, int | None]:
+    title = response.headers.get("x-track-title") or ""
+    artist = response.headers.get("x-track-artist") or "Unknown Artist"
+    duration = response.headers.get("x-track-duration")
+    try:
+        duration_value = int(float(duration)) if duration else None
+    except (TypeError, ValueError):
+        duration_value = None
+
+    filename = _content_filename(response)
+    if not title and filename:
+        stem = Path(filename).stem.strip()
+        title = stem or fallback
+        if " - " in stem:
+            possible_artist, possible_title = stem.split(" - ", 1)
+            if possible_artist.strip() and possible_title.strip():
+                artist, title = possible_artist.strip(), possible_title.strip()
+    if not title:
+        title = fallback
+    return title, artist, duration_value
+
+
+async def _download_binary(endpoint: str, params: dict[str, str], fallback_title: str) -> dict[str, Any]:
+    headers = _headers()
+    root = Path(tempfile.mkdtemp(prefix="muichiro_hep_"))
+    output = root / "track.mp3"
+    try:
+        timeout = _timeout()
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(f"{_base_url()}{endpoint}", params=params) as response:
+                if response.status != 200:
+                    await _raise_response_error(response)
+                content_type = response.headers.get("Content-Type", "").lower()
+                if "json" in content_type or "text/html" in content_type or "video/" in content_type:
+                    body = await response.read()
+                    try:
+                        import json
+                        payload = json.loads(body.decode("utf-8", errors="replace"))
+                    except Exception:
+                        payload = {}
+                    raise HepMusicError(response.status, _error_message(payload, "Hep.gg did not return an MP3 audio file"))
+                title, artist, duration = _metadata_from_response(response, fallback_title)
+                written = 0
+                with output.open("wb") as file:
+                    async for chunk in response.content.iter_chunked(256 * 1024):
+                        if chunk:
+                            file.write(chunk)
+                            written += len(chunk)
+                if written < 1024:
+                    raise HepMusicError(500, "Hep.gg returned an empty or incomplete audio file")
+        return {
+            "media_path": str(output),
+            "title": title,
+            "artist": artist,
+            "duration": duration,
+            "provider": "hep_media" if endpoint == "/media" else "hep_library",
+        }
+    except HepMusicError:
+        _remove_tree(root)
+        raise
+    except asyncio.TimeoutError as exc:
+        _remove_tree(root)
+        raise HepMusicError(0, "Hep.gg media request timed out") from exc
+    except aiohttp.ClientError as exc:
+        _remove_tree(root)
+        raise HepMusicError(0, f"Hep.gg network request failed: {type(exc).__name__}") from exc
+    except Exception:
+        _remove_tree(root)
         raise
 
 
+def _remove_tree(root: Path) -> None:
+    try:
+        for item in root.iterdir():
+            if item.is_file():
+                item.unlink(missing_ok=True)
+        root.rmdir()
+    except OSError:
+        pass
+
+
+async def _search_library(query: str) -> dict[str, Any]:
+    headers = _headers()
+    timeout = aiohttp.ClientTimeout(total=35, connect=CONNECT_TIMEOUT, sock_read=25)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(f"{_base_url()}/search", params={"q": query}) as response:
+                if response.status != 200:
+                    await _raise_response_error(response)
+                try:
+                    payload = await response.json(content_type=None)
+                except Exception as exc:
+                    raise HepMusicError(response.status, "Hep.gg returned an unreadable search response") from exc
+    except HepMusicError:
+        raise
+    except asyncio.TimeoutError as exc:
+        raise HepMusicError(0, "Hep.gg search timed out") from exc
+    except aiohttp.ClientError as exc:
+        raise HepMusicError(0, f"Hep.gg network request failed: {type(exc).__name__}") from exc
+
+    results = _unwrap_search(payload)
+    if not results:
+        raise HepMusicError(404, "No matching track was found in the Hep.gg music library")
+
+    item = results[0]
+    isrc = str(_candidate_value(item, "isrc", "ISRC", "isrc_code") or "").strip().upper()
+    title = str(_candidate_value(item, "title", "name", "track_name") or query).strip()
+    artist_value = _candidate_value(item, "artist", "artists", "artist_name", "performer")
+    if isinstance(artist_value, list):
+        artist_value = ", ".join(str(x.get("name", x)) if isinstance(x, dict) else str(x) for x in artist_value)
+    artist = str(artist_value or "Unknown Artist").strip()
+    if not re.fullmatch(r"[A-Z0-9]{12}", isrc):
+        # A URL in a search result can still be handed to the unified media endpoint.
+        url = _candidate_value(item, "url", "webpage_url", "link")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            media = await _download_binary("/media", {"url": url, "format": "audio"}, title)
+            return {**media, "id": None, "webpage_url": url, "thumbnail": None, "query": query}
+        raise HepMusicError(404, "Hep.gg search returned no downloadable track identifier")
+
+    thumbnail = _candidate_value(item, "thumbnail", "artwork", "cover", "image", "cover_url")
+    if isinstance(thumbnail, dict):
+        thumbnail = _candidate_value(thumbnail, "url", "src")
+    if not thumbnail:
+        thumbnail = f"{_base_url()}/artwork/{isrc}"
+
+    return {
+        "id": isrc,
+        "isrc": isrc,
+        "provider": "hep_library",
+        "title": title,
+        "artist": artist,
+        "webpage_url": f"hep-library://{isrc}",
+        "thumbnail": str(thumbnail) if thumbnail else None,
+        "duration": _duration_seconds(item),
+        "stream_url": None,
+        "query": query,
+    }
+
+
+async def resolve(query: str) -> dict[str, Any]:
+    target = query.strip()
+    if not target:
+        raise ValueError("Empty music query")
+    if target.startswith(("http://", "https://")):
+        media = await _download_binary("/media", {"url": target, "format": "audio"}, "Requested track")
+        return {
+            **media,
+            "id": None,
+            "isrc": None,
+            "webpage_url": target,
+            "thumbnail": None,
+            "stream_url": None,
+            "query": target,
+        }
+    return await _search_library(target)
+
+
 async def download_audio(info: dict[str, Any]) -> str:
-    return await asyncio.to_thread(_download_sync, info)
+    existing = info.get("media_path")
+    if existing and Path(existing).is_file():
+        return str(existing)
+
+    provider = info.get("provider") or "hep_library"
+    if provider == "hep_media":
+        url = info.get("webpage_url") or info.get("source_url") or info.get("query")
+        if not url:
+            raise HepMusicError(400, "No media URL was provided")
+        result = await _download_binary("/media", {"url": str(url), "format": "audio"}, str(info.get("title") or "Requested track"))
+    else:
+        isrc = str(info.get("isrc") or info.get("id") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{12}", isrc):
+            raise HepMusicError(404, "Hep.gg track identifier is missing or invalid")
+        result = await _download_binary("/download", {"isrc": isrc, "quality": "320"}, str(info.get("title") or "Requested track"))
+
+    path = result.get("media_path")
+    if not path:
+        raise HepMusicError(500, "Hep.gg did not prepare an audio file")
+    # The Track object is updated by the caller if API metadata was richer.
+    info.update(result)
+    return str(path)
 
 
-def cleanup_media(path: str | None):
+def cleanup_media(path: str | None) -> None:
     if not path:
         return
     p = Path(path)
@@ -141,7 +336,7 @@ def cleanup_media(path: str | None):
         if p.exists():
             p.unlink()
         parent = p.parent
-        if parent.name.startswith("muichiro_ytdlp_"):
+        if parent.name.startswith(("muichiro_hep_", "muichiro_seek_")):
             try:
                 parent.rmdir()
             except OSError:
