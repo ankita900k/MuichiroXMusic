@@ -11,6 +11,7 @@ import email.message
 import logging
 import os
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -126,6 +127,13 @@ def _duration_seconds(item: dict[str, Any]) -> int | None:
             except (TypeError, ValueError):
                 return None
     try:
+        if isinstance(raw, str) and ":" in raw:
+            parts = [int(part) for part in raw.strip().split(":")]
+            if 2 <= len(parts) <= 3 and all(part >= 0 for part in parts):
+                value = parts[-1] + 60 * parts[-2]
+                if len(parts) == 3:
+                    value += 3600 * parts[0]
+                return value if value > 0 else None
         value = int(float(raw))
         return value if value > 0 else None
     except (TypeError, ValueError):
@@ -168,6 +176,34 @@ def _metadata_from_response(response: aiohttp.ClientResponse, fallback: str) -> 
     return title, artist, duration_value
 
 
+def _probe_duration(path: Path) -> int | None:
+    try:
+        result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)], capture_output=True, text=True, timeout=12, check=True)
+        value = float(result.stdout.strip())
+        return max(1, int(round(value))) if value > 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _ensure_mp3(path: Path) -> Path:
+    try:
+        result = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", str(path)], capture_output=True, text=True, timeout=12, check=True)
+        if result.stdout.strip().lower() == "mp3":
+            return path
+    except (OSError, subprocess.SubprocessError):
+        pass
+    converted = path.with_name("track-converted.mp3")
+    try:
+        subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(path), "-vn", "-codec:a", "libmp3lame", "-q:a", "2", str(converted)], capture_output=True, timeout=180, check=True)
+        if not converted.is_file() or converted.stat().st_size < 1024:
+            raise RuntimeError("FFmpeg produced an empty MP3")
+        path.unlink(missing_ok=True)
+        return converted
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        converted.unlink(missing_ok=True)
+        raise HepMusicError(500, "Hep.gg response could not be converted to MP3") from exc
+
+
 async def _download_binary(endpoint: str, params: dict[str, str], fallback_title: str) -> dict[str, Any]:
     headers = _headers()
     root = Path(tempfile.mkdtemp(prefix="muichiro_hep_"))
@@ -196,6 +232,9 @@ async def _download_binary(endpoint: str, params: dict[str, str], fallback_title
                             written += len(chunk)
                 if written < 1024:
                     raise HepMusicError(500, "Hep.gg returned an empty or incomplete audio file")
+        output = await asyncio.to_thread(_ensure_mp3, output)
+        if not duration:
+            duration = await asyncio.to_thread(_probe_duration, output)
         return {
             "media_path": str(output),
             "title": title,

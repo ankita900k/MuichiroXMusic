@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 REWIND_SECONDS = 10
 FORWARD_SECONDS = 10
-TRACKER_INTERVAL = 5
+TRACKER_INTERVAL = 3
 
 
 def _format_time(seconds: float | int | None) -> str:
@@ -362,6 +362,18 @@ async def _send_audio(update, track: Track):
     path = None
     try:
         path = await _prepare_track(track)
+        # Hep.gg search results may omit duration; probe the actual media for Telegram metadata.
+        if not track.duration and path:
+            try:
+                import subprocess
+                probe = await asyncio.to_thread(
+                    subprocess.run,
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
+                    capture_output=True, text=True, timeout=12, check=True,
+                )
+                track.duration = max(1, int(round(float(probe.stdout.strip()))))
+            except Exception:
+                log.debug("Could not probe duration for /audio track", exc_info=True)
         await update.get_bot().send_audio(
             chat_id=update.effective_chat.id,
             audio=path,
