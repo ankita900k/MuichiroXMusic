@@ -1,4 +1,4 @@
-# Muichiro Music — yt-dlp backend
+# Muichiro Music — yt-dlp backend with EJS + Deno YouTube challenge support
 
 The music system now uses yt-dlp instead of the retired Annie API. No cookies, browser profiles, login sessions, or `ANNIE_API_KEY` are used by the downloader.
 
@@ -21,3 +21,8 @@ The music system now uses yt-dlp instead of the retired Annie API. No cookies, b
 ## Deployment
 
 FFmpeg is intentionally kept in the Docker image because the player uses it for relative seek operations and media compatibility.
+
+
+## YouTube extraction reliability
+
+This build enables yt-dlp's supported EJS challenge-solving path with Deno and the matching `yt-dlp-ejs` package. It does not use browser cookies, account sessions, or public Gist credentials. YouTube can still change server-side access requirements, so extraction cannot be guaranteed for every video or network.

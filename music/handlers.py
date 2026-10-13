@@ -2,7 +2,6 @@ import asyncio
 import io
 import logging
 import os
-import random
 import time
 from html import escape
 
@@ -568,7 +567,7 @@ async def callback(update, context):
         await call.answer("🎧 Live playback tracker")
         return
 
-    if action in {"pause_resume", "skip", "stop", "rewind", "forward", "shuffle"}:
+    if action in {"pause_resume", "skip", "stop", "rewind", "forward"}:
         if not await _require_callback_admin(call, context):
             return
 
@@ -630,14 +629,6 @@ async def callback(update, context):
             except Exception:
                 log.exception("Relative seek failed")
                 await call.answer("Seek failed.", show_alert=True)
-            return
-
-        if action == "shuffle":
-            if len(state.queue) < 2:
-                await call.answer("Not enough queued tracks to shuffle.")
-                return
-            random.shuffle(state.queue)
-            await call.answer("🔀 Queue shuffled")
             return
 
         if action == "now":

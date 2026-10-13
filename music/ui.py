@@ -30,10 +30,7 @@ def player_keyboard(paused: bool, position: float | int | None = None, duration:
             InlineKeyboardButton("⏪", callback_data="music:player:rewind"),
             InlineKeyboardButton(pause_text, callback_data="music:player:pause_resume", style="primary"),
             InlineKeyboardButton("⏩", callback_data="music:player:forward"),
-            InlineKeyboardButton("🔀", callback_data="music:player:shuffle"),
-        ],
-        [
-            InlineKeyboardButton("📋 𝗤𝗨𝗘𝗨𝗘", callback_data="music:player:queue"),
+            InlineKeyboardButton("📋", callback_data="music:player:queue"),
         ],
     ])
 

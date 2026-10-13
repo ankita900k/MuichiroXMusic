@@ -435,8 +435,8 @@ async def button_callback(
 
 🎧 Interactive Now Playing panel
 
-⏹️ Stop   ⏪ 10s   ⏸️ Pause   10s ⏩   🔀 Shuffle
-📋 Queue   📈 Live button tracker
+⏹️ Stop   ⏪ 10s   ⏸️ Pause   10s ⏩   📋 Queue
+📈 Live button tracker
 
 ✨ Each new track gets its own fresh player card and artwork.
 """,
@@ -473,9 +473,8 @@ async def button_callback(
 ╰━━━━━━━━━━━━━━━━━━━━╯
 
 ⏹️ Stop / ⏪ 10s / ⏸️ Pause / 10s ⏩
-🔀 Shuffle
-📈 Live tracker updates on the player buttons
 📋 Queue / ⏭️ Next
+📈 Live tracker updates on the player buttons
 
 🎵 <i>Fast, clean and built for voice chat.</i>
 """,
