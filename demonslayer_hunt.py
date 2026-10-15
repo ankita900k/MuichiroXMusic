@@ -23,7 +23,7 @@ from database import db, cursor, USE_POSTGRES
 # ============================================================
 
 OWNER_ID = 6608396796
-STORE_CHANNEL_LINK = "https://t.me/muichiroUpdates/23"
+STORE_CHANNEL_LINK = "https://t.me/muichiroUpdates/30"
 
 HUNT_DURATION = 600
 MIN_HUNT_INTERVAL = 7200
