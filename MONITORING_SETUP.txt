@@ -1,30 +1,52 @@
-MUICHIRO LIVE MONITORING PANEL
+MUICHIRO HQ — CLICKABLE DASHBOARD + TWO ACCESS LEVELS
 
-Files included in this patch:
-- webhook.py                 Replaces the existing webhook.py
-- monitoring.py              New monitoring buffer/logger module
-- music/handlers.py          Replaces the existing music/handlers.py; adds playback events
-- .env.monitoring.example    Reference for the two new Render environment variables
+PATCH FILES
+- webhook.py: replace the existing webhook.py with this patched version.
+- monitoring.py: replace/add this SQLite-backed monitoring module.
+- music/handlers.py: replace the existing file with this patched file; it includes the 10-favourite limit and monitoring events. It intentionally does NOT include music/voice.py, so your assistant-invite voice fix is not overwritten.
+- .env.monitoring.example: reference only; do not upload secrets into GitHub.
+
+RENDER ENVIRONMENT VARIABLES
+Required owner login:
+  MONITOR_OWNER_USERNAME = your private owner username
+  MONITOR_OWNER_PASSWORD = a long, unique password
+
+Optional read-only admin login:
+  MONITOR_VIEWER_USERNAME = a different username
+  MONITOR_VIEWER_PASSWORD = a different long, unique password
+
+Optional database settings:
+  MONITOR_DB_PATH = monitor_logs.sqlite3
+  MONITOR_MAX_ENTRIES = 2000
+
+For persistent SQLite history across redeploys, attach a Render disk if your service/plan supports it, mount it at /var/data, and set:
+  MONITOR_DB_PATH = /var/data/muichiro_monitor.sqlite3
+Without persistent storage, SQLite is local and a redeploy may erase stored logs. Do not put the database in a source-controlled folder.
+
+ACCESS ROLES
+- Owner account: dashboard, search, tab navigation, manual refresh, pause/resume auto-refresh, export logs to JSON, and clear stored logs (confirmation required).
+- Viewer account: view music logs, activity/health, and application logs; search, navigate sections, refresh and pause/resume. Export and clear endpoints are denied server-side.
+- Owner-only routes check the role on the server; hiding buttons is not the security boundary.
 
 INSTALL
-1. Back up your current webhook.py and music/handlers.py.
-2. Copy webhook.py and monitoring.py into the project root (same folder as bot.py).
-3. Copy music/handlers.py over the existing music/handlers.py.
-4. In Render > your Web Service > Environment, add:
-   MONITOR_USERNAME = a private dashboard username
-   MONITOR_PASSWORD = a long, unique password
-   Do not commit real credentials to GitHub.
-5. Commit/push the changed files and let Render redeploy.
-6. Open the service's existing base URL (the root URL, ending in /). Browser authentication will ask for the username/password.
+1. Back up current webhook.py and music/handlers.py.
+2. Copy the patch files into the matching paths in your project. Do not replace music/voice.py.
+3. Add the environment variables in Render Dashboard > your Web Service > Environment.
+4. Commit and push the changes; wait for the deployment to succeed.
+5. Open your existing Render service base URL in a browser and sign in using the owner or viewer account.
 
-SECTIONS
-1. Music Logs: track starts, queued songs, audio deliveries, track ends, player controls and failures.
-2. Bot Activity & Health: incoming commands, user/chat metadata, webhook activity and service events. Arbitrary message contents are not stored.
-3. Render / Application Logs: a live in-memory mirror of application stdout/stderr and Python logging.
+WHAT THE DASHBOARD SHOWS
+1. Music Logs: playback/queue/audio events emitted by music handlers.
+2. Bot Activity & Health: Telegram update summaries, commands, users/chats metadata, startup and health status.
+3. Application Logs: captured Python logging plus stdout/stderr written after capture starts.
 
-IMPORTANT LIMITATIONS
-- This is a read-only dashboard; it has no buttons or controls.
-- Logs are stored in RAM and clear when the Render service restarts/redeploys. The dashboard keeps the most recent 400 entries per section.
-- The app cannot fetch Render's private build/deploy/platform log stream from inside itself. Those original platform logs remain available in Render Dashboard > Logs. Section 3 shows application output mirrored from this service, not all Render platform logs.
-- The existing Telegram webhook remains at /telegram. /health remains a simple health endpoint.
-- Keep MONITOR_USERNAME and MONITOR_PASSWORD secret. The panel exposes user IDs, chat IDs, commands, and music activity to anyone who can authenticate.
+LIMITATIONS AND PRIVACY
+- Render build/deploy/platform logs are not exposed automatically to the running app; use Render's own Logs page for those.
+- General activity logging records command names and operational metadata, not arbitrary private message text. Music logs can include song titles and user/chat IDs.
+- This patch does not add remote process restart or music-control buttons; those require separate guarded actions and careful integration.
+- SQLite uses a separate database file. It does not modify the bot's existing user/favourites database.
+- Do not expose the dashboard without strong passwords. Use HTTPS (Render's public URL) and never commit credentials or database files.
+
+TESTS
+Run: python -m py_compile webhook.py monitoring.py music/handlers.py
+Check the ZIP contents before copying. Test on a staging deployment first if available.

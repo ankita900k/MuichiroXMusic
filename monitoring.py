@@ -1,52 +1,99 @@
-"""Small in-memory monitoring buffers for the Muichiro Render dashboard.
-
-Only metadata/commands are logged for general Telegram activity; arbitrary
-private-message text is deliberately not stored. Buffers reset on process restart.
-"""
+"""SQLite-backed, privacy-conscious event logging for Muichiro HQ."""
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
+import sys
 import threading
-from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 
-MAX_ENTRIES = 400
+MAX_ENTRIES = max(100, min(int(os.environ.get("MONITOR_MAX_ENTRIES", "2000")), 20000))
+DB_PATH = os.environ.get("MONITOR_DB_PATH", "monitor_logs.sqlite3")
 _lock = threading.RLock()
-_music = deque(maxlen=MAX_ENTRIES)
-_activity = deque(maxlen=MAX_ENTRIES)
-_render = deque(maxlen=MAX_ENTRIES)
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
-def _push(target: deque, message: str, level: str = "INFO") -> None:
-    entry = {"time": _now(), "level": str(level).upper(), "message": str(message)[:1200]}
-    with _lock:
-        target.appendleft(entry)
+def _connect():
+    path = Path(DB_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _init_db():
+    with _lock, _connect() as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS monitor_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL CHECK(category IN ('music','activity','render')),
+            time TEXT NOT NULL,
+            level TEXT NOT NULL,
+            message TEXT NOT NULL
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_monitor_category_id ON monitor_events(category, id DESC)")
+        conn.commit()
+
+
+_init_db()
+
+
+def _push(category: str, message: str, level: str = "INFO") -> None:
+    safe_message = str(message)[:1200]
+    with _lock, _connect() as conn:
+        conn.execute(
+            "INSERT INTO monitor_events(category,time,level,message) VALUES(?,?,?,?)",
+            (category, _now(), str(level).upper()[:16], safe_message),
+        )
+        conn.execute(
+            "DELETE FROM monitor_events WHERE id NOT IN (SELECT id FROM monitor_events ORDER BY id DESC LIMIT ?)",
+            (MAX_ENTRIES * 3,),
+        )
+        conn.commit()
 
 
 def music_event(message: str, level: str = "INFO") -> None:
-    _push(_music, message, level)
-    _push(_activity, f"MUSIC · {message}", level)
+    _push("music", message, level)
+    _push("activity", f"MUSIC · {message}", level)
 
 
 def activity_event(message: str, level: str = "INFO") -> None:
-    _push(_activity, message, level)
+    _push("activity", message, level)
 
 
 def render_event(message: str, level: str = "INFO") -> None:
-    _push(_render, message, level)
+    _push("render", message, level)
 
 
-def snapshot() -> dict:
-    with _lock:
-        return {
-            "music": list(_music),
-            "activity": list(_activity),
-            "render": list(_render),
-        }
+def snapshot(limit: int = 250) -> dict:
+    limit = max(20, min(int(limit), 1000))
+    with _lock, _connect() as conn:
+        result = {}
+        for category in ("music", "activity", "render"):
+            rows = conn.execute(
+                "SELECT time,level,message FROM monitor_events WHERE category=? ORDER BY id DESC LIMIT ?",
+                (category, limit),
+            ).fetchall()
+            result[category] = [dict(row) for row in rows]
+        counts = conn.execute(
+            "SELECT category,COUNT(*) AS count FROM monitor_events GROUP BY category"
+        ).fetchall()
+        result["counts"] = {row["category"]: row["count"] for row in counts}
+        result["database"] = "sqlite"
+        return result
+
+
+def clear_logs() -> int:
+    with _lock, _connect() as conn:
+        cur = conn.execute("DELETE FROM monitor_events")
+        conn.commit()
+        return cur.rowcount
 
 
 class _RenderLogHandler(logging.Handler):
@@ -58,7 +105,7 @@ class _RenderLogHandler(logging.Handler):
 
 
 class _TeeStream:
-    """Mirror process stdout/stderr into the dashboard while keeping Render output."""
+    """Mirror stdout/stderr to SQLite while preserving Render's original stream."""
     def __init__(self, original, stream_name: str):
         self.original = original
         self.stream_name = stream_name
@@ -67,8 +114,7 @@ class _TeeStream:
     def write(self, value):
         result = self.original.write(value)
         try:
-            text = str(value)
-            parts = (self._pending + text).splitlines(keepends=True)
+            parts = (self._pending + str(value)).splitlines(keepends=True)
             self._pending = ""
             for part in parts:
                 if part.endswith(("\n", "\r")):
@@ -96,8 +142,6 @@ class _TeeStream:
 
 
 def install_render_capture() -> None:
-    """Capture application output. Render build/deploy/platform logs are not exposed by its runtime API."""
-    import sys
     if not isinstance(sys.stdout, _TeeStream):
         sys.stdout = _TeeStream(sys.stdout, "stdout")
     if not isinstance(sys.stderr, _TeeStream):
@@ -105,11 +149,11 @@ def install_render_capture() -> None:
     root = logging.getLogger()
     if not any(isinstance(handler, _RenderLogHandler) for handler in root.handlers):
         root.addHandler(_RenderLogHandler())
-    activity_event("Monitoring capture started; dashboard buffers are in-memory and reset on restart.")
+    activity_event(f"Monitoring capture started; SQLite database: {DB_PATH}")
 
 
 def describe_update(update) -> str | None:
-    """Return a privacy-conscious summary of a Telegram update."""
+    """Summarize Telegram activity without storing arbitrary message contents."""
     user = getattr(update, "effective_user", None)
     chat = getattr(update, "effective_chat", None)
     message = getattr(update, "effective_message", None)
