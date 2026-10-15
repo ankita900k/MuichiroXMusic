@@ -1,0 +1,30 @@
+MUICHIRO LIVE MONITORING PANEL
+
+Files included in this patch:
+- webhook.py                 Replaces the existing webhook.py
+- monitoring.py              New monitoring buffer/logger module
+- music/handlers.py          Replaces the existing music/handlers.py; adds playback events
+- .env.monitoring.example    Reference for the two new Render environment variables
+
+INSTALL
+1. Back up your current webhook.py and music/handlers.py.
+2. Copy webhook.py and monitoring.py into the project root (same folder as bot.py).
+3. Copy music/handlers.py over the existing music/handlers.py.
+4. In Render > your Web Service > Environment, add:
+   MONITOR_USERNAME = a private dashboard username
+   MONITOR_PASSWORD = a long, unique password
+   Do not commit real credentials to GitHub.
+5. Commit/push the changed files and let Render redeploy.
+6. Open the service's existing base URL (the root URL, ending in /). Browser authentication will ask for the username/password.
+
+SECTIONS
+1. Music Logs: track starts, queued songs, audio deliveries, track ends, player controls and failures.
+2. Bot Activity & Health: incoming commands, user/chat metadata, webhook activity and service events. Arbitrary message contents are not stored.
+3. Render / Application Logs: a live in-memory mirror of application stdout/stderr and Python logging.
+
+IMPORTANT LIMITATIONS
+- This is a read-only dashboard; it has no buttons or controls.
+- Logs are stored in RAM and clear when the Render service restarts/redeploys. The dashboard keeps the most recent 400 entries per section.
+- The app cannot fetch Render's private build/deploy/platform log stream from inside itself. Those original platform logs remain available in Render Dashboard > Logs. Section 3 shows application output mirrored from this service, not all Render platform logs.
+- The existing Telegram webhook remains at /telegram. /health remains a simple health endpoint.
+- Keep MONITOR_USERNAME and MONITOR_PASSWORD secret. The panel exposes user IDs, chat IDs, commands, and music activity to anyone who can authenticate.

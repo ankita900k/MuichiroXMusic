@@ -3,6 +3,7 @@ import io
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 import aiohttp
@@ -17,6 +18,7 @@ from .manager import player_manager
 from .models import Track
 from .favorites import add_favorite, list_favorites
 from .ui import player_keyboard
+import monitoring
 
 log = logging.getLogger(__name__)
 
@@ -304,6 +306,43 @@ async def _prepare_track(track: Track):
     return track.media_path
 
 
+async def _ensure_assistant_in_group(bot, chat_id: int):
+    """Automatically join the Pyrogram assistant using a temporary invite."""
+    voice = runtime.voice
+    if voice is None:
+        raise RuntimeError("Music voice layer is not initialized")
+
+    try:
+        member = await voice.client.get_chat_member(chat_id, "me")
+        status = getattr(member, "status", "")
+        if status not in {"left", "kicked", "banned"}:
+            await voice._warm_dialog_cache(chat_id)
+            return
+    except Exception as exc:
+        log.debug("Assistant membership check for %s failed: %s", chat_id, exc)
+
+    try:
+        invite = await bot.create_chat_invite_link(
+            chat_id=chat_id,
+            name="Muichiro music assistant",
+            expire_date=datetime.now(timezone.utc) + timedelta(minutes=5),
+            member_limit=1,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "The bot could not create an invite link for the music assistant. "
+            "Make sure the bot is an administrator with permission to invite users via link."
+        ) from exc
+
+    try:
+        await voice.ensure_joined(chat_id, invite.invite_link)
+    finally:
+        try:
+            await bot.revoke_chat_invite_link(chat_id, invite.invite_link)
+        except Exception:
+            log.debug("Could not revoke temporary invite in %s", chat_id, exc_info=True)
+
+
 async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
     state = player_manager.get(chat_id)
     previous = state.current
@@ -327,10 +366,13 @@ async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
                 pass
         state.preload_task = None
         state.preload_for = None
+        if bot is not None:
+            await _ensure_assistant_in_group(bot, chat_id)
         await _prepare_track(track)
         state.playback_path = track.media_path
         await runtime.voice.play(chat_id, track.media_path)
         state.started_at = asyncio.get_running_loop().time()
+        monitoring.music_event(f"PLAY STARTED · chat_id={chat_id} · title={track.title!r} · artist={track.artist or 'Unknown Artist'!r} · requested_by={track.requested_name!r}")
     except Exception:
         cleanup_media(track.media_path)
         track.media_path = None
@@ -421,6 +463,7 @@ async def _advance(chat_id: int, bot):
     old_path = state.playback_path or (old.media_path if old else None)
     next_track = player_manager.pop_next(chat_id)
     if not next_track:
+        monitoring.music_event(f"QUEUE EMPTY · playback ended · chat_id={chat_id}")
         await runtime.voice.leave(chat_id)
         await _stop_tracker(state)
         state.current = None
@@ -535,6 +578,8 @@ async def play_command(update, context):
             state = player_manager.get(chat_id)
             if state.current:
                 pos = player_manager.enqueue(chat_id, track)
+                chat = update.effective_chat
+                monitoring.music_event(f"TRACK QUEUED · chat={getattr(chat, 'title', None) or getattr(chat, 'full_name', None) or 'unknown'} · chat_id={chat_id} · title={track.title!r} · position={pos} · requested_by={track.requested_name!r}")
                 _schedule_preload(chat_id)
                 await status.edit_text(
                     f"➕ <b>Queued</b> · <b>{escape(track.title)}</b>\n📍 Position: <b>#{pos}</b>\n📋 Waiting: <b>{len(state.queue)}</b>",
@@ -544,6 +589,7 @@ async def play_command(update, context):
             await _start_track(chat_id, track, bot=context.bot)
             await _send_now_playing(context.bot, chat_id, state, replace_message=status)
     except Exception as exc:
+        monitoring.music_event(f"PLAYBACK FAILED · chat_id={getattr(update.effective_chat, 'id', '?')} · query={query!r} · error={type(exc).__name__}: {exc}", "ERROR")
         log.exception("VC playback failed")
         await _report_failure(message, status, _friendly_music_error(exc, "Playback"))
 
@@ -560,11 +606,13 @@ async def audio_command(update, context):
     try:
         track = await _make_track(update, query)
         await _send_audio(update, track)
+        monitoring.music_event(f"AUDIO DELIVERED · chat_id={getattr(update.effective_chat, 'id', '?')} · title={track.title!r} · requested_by={track.requested_name!r}")
         try:
             await status.delete()
         except Exception:
             pass
     except Exception as exc:
+        monitoring.music_event(f"AUDIO DELIVERY FAILED · chat_id={getattr(update.effective_chat, 'id', '?')} · query={query!r} · error={type(exc).__name__}: {exc}", "ERROR")
         log.exception("Audio delivery failed")
         await _report_failure(message, status, _friendly_music_error(exc, "Audio delivery"))
 
@@ -692,6 +740,7 @@ async def skip_command(update, context):
     if not await _require_music_admin(update, context):
         return
     chat_id = update.effective_chat.id
+    monitoring.music_event(f"SKIP REQUESTED · chat_id={chat_id} · user_id={getattr(update.effective_user, 'id', '?')}")
     async with player_manager.lock(chat_id):
         state = player_manager.get(chat_id)
         if not state.current:
@@ -709,6 +758,7 @@ async def pause_command(update, context):
     if not await _require_music_admin(update, context):
         return
     chat_id = update.effective_chat.id
+    monitoring.music_event(f"PAUSE REQUESTED · chat_id={chat_id} · user_id={getattr(update.effective_user, 'id', '?')}")
     async with player_manager.lock(chat_id):
         state = player_manager.get(chat_id)
         if not state.current:
@@ -724,6 +774,7 @@ async def resume_command(update, context):
     if not await _require_music_admin(update, context):
         return
     chat_id = update.effective_chat.id
+    monitoring.music_event(f"RESUME REQUESTED · chat_id={chat_id} · user_id={getattr(update.effective_user, 'id', '?')}")
     async with player_manager.lock(chat_id):
         state = player_manager.get(chat_id)
         if not state.current:
@@ -740,6 +791,7 @@ async def stop_command(update, context):
     if not await _require_music_admin(update, context):
         return
     chat_id = update.effective_chat.id
+    monitoring.music_event(f"STOP REQUESTED · chat_id={chat_id} · user_id={getattr(update.effective_user, 'id', '?')}")
     async with player_manager.lock(chat_id):
         await _stop(chat_id, context.bot)
     await update.effective_message.reply_text("⏹ <b>Playback stopped.</b>", parse_mode=ParseMode.HTML)
@@ -755,6 +807,7 @@ async def callback(update, context):
         return
     action = data.split(":", 2)[2]
     chat_id = call.message.chat.id
+    monitoring.music_event(f"PLAYER CONTROL · action={action} · chat_id={chat_id} · user_id={getattr(call.from_user, 'id', '?')}")
 
     if action == "noop":
         await call.answer("🎧 Live playback tracker")
@@ -871,6 +924,7 @@ def get_handlers():
 
 
 async def on_stream_end(chat_id: int, bot):
+    monitoring.music_event(f"TRACK ENDED · chat_id={chat_id}")
     async with player_manager.lock(chat_id):
         state = player_manager.get(chat_id)
         now = asyncio.get_running_loop().time()
