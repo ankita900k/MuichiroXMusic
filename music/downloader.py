@@ -154,7 +154,7 @@ def _content_filename(response: aiohttp.ClientResponse) -> str | None:
         return unquote(match.group(1)) if match else None
 
 
-def _metadata_from_response(response: aiohttp.ClientResponse, fallback: str) -> tuple[str, str, int | None]:
+def _metadata_from_response(response: aiohttp.ClientResponse, fallback: str) -> tuple[str, str, int | None, str | None, str | None]:
     title = response.headers.get("x-track-title") or ""
     artist = response.headers.get("x-track-artist") or "Unknown Artist"
     duration = response.headers.get("x-track-duration")
@@ -173,7 +173,9 @@ def _metadata_from_response(response: aiohttp.ClientResponse, fallback: str) -> 
                 artist, title = possible_artist.strip(), possible_title.strip()
     if not title:
         title = fallback
-    return title, artist, duration_value
+    album = response.headers.get("x-track-album") or None
+    artwork = response.headers.get("x-track-artwork") or None
+    return title, artist, duration_value, album, artwork
 
 
 def _probe_duration(path: Path) -> int | None:
@@ -223,7 +225,7 @@ async def _download_binary(endpoint: str, params: dict[str, str], fallback_title
                     except Exception:
                         payload = {}
                     raise HepMusicError(response.status, _error_message(payload, "Hep.gg did not return an MP3 audio file"))
-                title, artist, duration = _metadata_from_response(response, fallback_title)
+                title, artist, duration, album, artwork = _metadata_from_response(response, fallback_title)
                 written = 0
                 with output.open("wb") as file:
                     async for chunk in response.content.iter_chunked(256 * 1024):
@@ -240,6 +242,8 @@ async def _download_binary(endpoint: str, params: dict[str, str], fallback_title
             "title": title,
             "artist": artist,
             "duration": duration,
+            "album": album,
+            "thumbnail": artwork,
             "provider": "hep_media" if endpoint == "/media" else "hep_library",
         }
     except HepMusicError:
@@ -310,12 +314,14 @@ async def _search_library(query: str) -> dict[str, Any]:
     if not thumbnail:
         thumbnail = f"{_base_url()}/artwork/{isrc}"
 
+    album = _candidate_value(item, "album", "album_name", "release")
     return {
         "id": isrc,
         "isrc": isrc,
         "provider": "hep_library",
         "title": title,
         "artist": artist,
+        "album": str(album).strip() if album else None,
         "webpage_url": f"hep-library://{isrc}",
         "thumbnail": str(thumbnail) if thumbnail else None,
         "duration": _duration_seconds(item),
@@ -335,10 +341,11 @@ async def resolve(query: str) -> dict[str, Any]:
             "id": None,
             "isrc": None,
             "webpage_url": target,
-            "thumbnail": None,
+            "thumbnail": media.get("thumbnail"),
             "stream_url": None,
             "query": target,
         }
+    # Song-name searches resolve directly through Hep.gg's music library.
     return await _search_library(target)
 
 
@@ -363,7 +370,13 @@ async def download_audio(info: dict[str, Any]) -> str:
     if not path:
         raise HepMusicError(500, "Hep.gg did not prepare an audio file")
     # The Track object is updated by the caller if API metadata was richer.
+    previous_thumbnail = info.get("thumbnail")
+    previous_album = info.get("album")
     info.update(result)
+    if not info.get("thumbnail"):
+        info["thumbnail"] = previous_thumbnail
+    if not info.get("album"):
+        info["album"] = previous_album
     return str(path)
 
 

@@ -17,6 +17,7 @@ class Track:
     video_id: Optional[str] = None
     provider: str = "hep_library"
     isrc: Optional[str] = None
+    album: Optional[str] = None
 
 
 @dataclass

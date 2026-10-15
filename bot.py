@@ -393,6 +393,9 @@ async def button_callback(
 <code>/skip</code> — Skip the current track
 <code>/stop</code> — Stop &amp; clear the queue
 <code>/queue</code> — View the queue
+<code>/fav</code> — Show your favourite songs
+<code>/playfav all</code> — Queue all your favourites
+<code>/playfav &lt;number&gt;</code> — Play a numbered favourite
 
 ━━━━━━━━━━━━━━━━━━━━
 

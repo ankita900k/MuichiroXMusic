@@ -32,6 +32,7 @@ def player_keyboard(paused: bool, position: float | int | None = None, duration:
             InlineKeyboardButton("⏩", callback_data="music:player:forward"),
             InlineKeyboardButton("📋", callback_data="music:player:queue"),
         ],
+        [InlineKeyboardButton("♡ 𝗙𝗔𝗩𝗢𝗨𝗥𝗜𝗧𝗘", callback_data="music:player:favorite")],
     ])
 
 

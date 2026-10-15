@@ -3,7 +3,6 @@ import io
 import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
 from html import escape
 
 import aiohttp
@@ -16,6 +15,7 @@ from . import runtime
 from .downloader import HepMusicError, cleanup_media, download_audio, resolve
 from .manager import player_manager
 from .models import Track
+from .favorites import add_favorite, list_favorites
 from .ui import player_keyboard
 
 log = logging.getLogger(__name__)
@@ -115,7 +115,8 @@ def _now_text(state) -> str:
         "🎧 <b>𝗡𝗢𝗪 𝗣𝗟𝗔𝗬𝗜𝗡𝗚</b>\n\n"
         f"🎵 <b>{escape(track.title)}</b>\n"
         f"🎤 {escape(track.artist or 'Unknown Artist')}\n"
-        f"👤 {escape(track.requested_name)}\n"
+        + (f"💿 {escape(track.album)}\n" if track.album else "")
+        + f"👤 {escape(track.requested_name)}\n"
         f"📋 Queue: <b>{len(state.queue)}</b>"
     )
 
@@ -276,6 +277,7 @@ async def _make_track(update: Update, query: str) -> Track:
         media_path=info.get("media_path"),
         provider=info.get("provider") or "hep_library",
         isrc=info.get("isrc"),
+        album=info.get("album"),
     )
 
 
@@ -290,57 +292,16 @@ async def _prepare_track(track: Track):
         "isrc": track.isrc,
         "provider": track.provider,
         "media_path": track.media_path,
+        "album": track.album,
+        "thumbnail": track.thumbnail,
     }
     track.media_path = await download_audio(info)
     track.title = info.get("title") or track.title
     track.artist = info.get("artist") or track.artist
     track.duration = info.get("duration") or track.duration
     track.thumbnail = info.get("thumbnail") or track.thumbnail
+    track.album = info.get("album") or track.album
     return track.media_path
-
-
-async def _ensure_assistant_in_group(bot, chat_id: int):
-    """Automatically join the Pyrogram assistant using a temporary invite.
-
-    Invite links are generated per group at runtime; no fixed invite URL or
-    extra environment variable is needed. The bot must be an admin allowed
-    to invite users via links.
-    """
-    voice = runtime.voice
-    if voice is None:
-        raise RuntimeError("Music voice layer is not initialized")
-
-    # Fast path: assistant is already a member.
-    try:
-        member = await voice.client.get_chat_member(chat_id, "me")
-        status = getattr(member, "status", "")
-        if status not in {"left", "kicked", "banned"}:
-            await voice._warm_dialog_cache(chat_id)
-            return
-    except Exception as exc:
-        log.debug("Assistant membership check for %s failed: %s", chat_id, exc)
-
-    try:
-        invite = await bot.create_chat_invite_link(
-            chat_id=chat_id,
-            name="Muichiro music assistant",
-            expire_date=datetime.now(timezone.utc) + timedelta(minutes=5),
-            member_limit=1,
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            "The bot could not create an invite link for the music assistant. "
-            "Make sure the bot is an administrator with permission to invite users via link."
-        ) from exc
-
-    try:
-        await voice.ensure_joined(chat_id, invite.invite_link)
-    finally:
-        # Revoke the temporary link after the join attempt.
-        try:
-            await bot.revoke_chat_invite_link(chat_id, invite.invite_link)
-        except Exception:
-            log.debug("Could not revoke temporary assistant invite in %s", chat_id, exc_info=True)
 
 
 async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
@@ -366,8 +327,6 @@ async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
                 pass
         state.preload_task = None
         state.preload_for = None
-        if bot is not None:
-            await _ensure_assistant_in_group(bot, chat_id)
         await _prepare_track(track)
         state.playback_path = track.media_path
         await runtime.voice.play(chat_id, track.media_path)
@@ -421,6 +380,11 @@ async def _send_audio(update, track: Track):
                 track.duration = max(1, int(round(float(probe.stdout.strip()))))
             except Exception:
                 log.debug("Could not probe duration for /audio track", exc_info=True)
+        thumb = await _download_thumbnail(track.thumbnail)
+        audio_kwargs = {}
+        if thumb:
+            thumb.seek(0)
+            audio_kwargs["thumbnail"] = InputFile(thumb, filename="cover.jpg")
         await update.get_bot().send_audio(
             chat_id=update.effective_chat.id,
             audio=path,
@@ -431,6 +395,7 @@ async def _send_audio(update, track: Track):
             write_timeout=180,
             read_timeout=180,
             pool_timeout=20,
+            **audio_kwargs,
         )
     except TimedOut:
         await asyncio.sleep(0.5)
@@ -604,6 +569,111 @@ async def audio_command(update, context):
         await _report_failure(message, status, _friendly_music_error(exc, "Audio delivery"))
 
 
+async def fav_command(update, context):
+    """Show this Telegram user's saved favourite tracks."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+    favorites = list_favorites(user.id, limit=10)
+    if not favorites:
+        await message.reply_text(
+            "💗 <b>Your favourites are empty.</b>\n\nTap ♡ Favourite on a playing song to save it here.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    shown = favorites[:10]
+    lines = [f"<b>{i}.</b> {escape(item['title'])} — {escape(item.get('artist') or 'Unknown Artist')}" for i, item in enumerate(shown, 1)]
+    suffix = ""
+    await message.reply_text(
+        "💗 <b>YOUR FAVOURITE SONGS</b>\n\n" + "\n".join(lines) + suffix + "\n\nUse <code>/playfav 2</code> or <code>/playfav all</code>.",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+async def playfav_command(update, context):
+    """Play one numbered favourite or enqueue all of the user's favourites."""
+    user = update.effective_user
+    message = update.effective_message
+    chat = update.effective_chat
+    if not user or not message or not chat:
+        return
+    query = " ".join(context.args).strip().lower()
+    if not query:
+        await message.reply_text("💗 <b>Usage</b>\n<code>/playfav all</code> or <code>/playfav 2</code>", parse_mode=ParseMode.HTML)
+        return
+    favorites = list_favorites(user.id, limit=10)
+    if not favorites:
+        await message.reply_text("💗 Your favourite songs list is empty. Tap ♡ Favourite on a playing track first.")
+        return
+    if query == "all":
+        selected = favorites[:10]
+    elif query.isdigit() and int(query) >= 1:
+        index = int(query)
+        if index > len(favorites):
+            await message.reply_text(f"❌ You have only {len(favorites)} favourite song(s). Use /fav to see their numbers.")
+            return
+        selected = [favorites[index - 1]]
+    else:
+        await message.reply_text("💗 Use <code>/playfav all</code> or a song number, e.g. <code>/playfav 2</code>.", parse_mode=ParseMode.HTML)
+        return
+
+    requester_name = user.full_name or "Unknown"
+    tracks = []
+    for item in selected:
+        source_url = item.get("source_url") or ""
+        provider = item.get("provider") or ("hep_library" if item.get("isrc") else "hep_media")
+        tracks.append(Track(
+            query=item.get("title") or source_url,
+            title=item.get("title") or "Unknown Track",
+            requested_by=user.id,
+            requested_name=requester_name,
+            source_url=source_url,
+            artist=item.get("artist") or "Unknown Artist",
+            thumbnail=item.get("thumbnail"),
+            duration=item.get("duration"),
+            provider=provider,
+            isrc=item.get("isrc"),
+            album=item.get("album"),
+        ))
+
+    status = await message.reply_text("💗 <b>Preparing your favourite song(s)…</b>", parse_mode=ParseMode.HTML)
+    try:
+        async with player_manager.lock(chat.id):
+            state = player_manager.get(chat.id)
+            if state.current:
+                for track in tracks:
+                    player_manager.enqueue(chat.id, track)
+                _schedule_preload(chat.id)
+                await status.edit_text(
+                    f"💗 <b>Added {len(tracks)} favourite song(s) to the queue.</b>\n📋 Waiting: <b>{len(state.queue)}</b>", 
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            first, *remaining = tracks
+            try:
+                await _start_track(chat.id, first, bot=context.bot)
+            except Exception as first_error:
+                cleanup_media(first.media_path)
+                if not remaining:
+                    raise first_error
+                # A single unavailable favourite should not prevent the remaining saved songs from playing.
+                for track in remaining:
+                    player_manager.enqueue(chat.id, track)
+                next_track = player_manager.pop_next(chat.id)
+                await _start_track(chat.id, next_track, bot=context.bot)
+                remaining = []
+            for track in remaining:
+                player_manager.enqueue(chat.id, track)
+            await _send_now_playing(context.bot, chat.id, state, replace_message=status)
+            _schedule_preload(chat.id)
+    except Exception as exc:
+        log.exception("Favourite playback failed")
+        await _report_failure(message, status, _friendly_music_error(exc, "Favourite playback"))
+
+
 async def queue_command(update, context):
     state = player_manager.get(update.effective_chat.id)
     await update.effective_message.reply_text(_queue_text(state), parse_mode=ParseMode.HTML)
@@ -694,6 +764,25 @@ async def callback(update, context):
         if not await _require_callback_admin(call, context):
             return
 
+    if action == "favorite":
+        user = call.from_user
+        state = player_manager.get(chat_id)
+        if not user or not state.current:
+            await call.answer("No track is currently playing.", show_alert=True)
+            return
+        try:
+            added, position = add_favorite(user.id, state.current)
+            if added:
+                await call.answer(f"💗 Saved to your favourites (#{position})", show_alert=True)
+            elif position == -1:
+                await call.answer("💗 Favourite limit reached (10 songs). Remove a favourite before adding another.", show_alert=True)
+            else:
+                await call.answer("💗 This song is already in your favourites.", show_alert=True)
+        except Exception:
+            log.exception("Could not save favourite track")
+            await call.answer("Could not save this favourite right now.", show_alert=True)
+        return
+
     if action == "queue":
         state = player_manager.get(chat_id)
         await call.answer("📋 Queue")
@@ -769,6 +858,8 @@ def get_handlers():
     return [
         CommandHandler("play", play_command),
         CommandHandler("audio", audio_command),
+        CommandHandler("fav", fav_command),
+        CommandHandler("playfav", playfav_command),
         CommandHandler("queue", queue_command),
         CommandHandler("now", now_command),
         CommandHandler("skip", skip_command),

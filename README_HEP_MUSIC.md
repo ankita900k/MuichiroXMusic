@@ -1,18 +1,31 @@
-# Muichiro Music — Hep.gg provider
+# Muichiro Music — Hep.gg library + personal favourites
 
-Muichiro uses Hep.gg Music API for music search and MP3 delivery.
+## Environment
 
-## Render environment
+Set `HEP_MUSIC_API_KEY` in Render Environment. `HEP_MUSIC_BASE_URL` is optional and defaults to `https://music.jakeypri.me`. You no longer need a YouTube Data API key.
 
-Add `HEP_MUSIC_API_KEY` with the key from your Hep.gg Music dashboard. Do not commit the real key to GitHub. The optional `HEP_MUSIC_BASE_URL` defaults to `https://music.jakeypri.me`.
+## Search and audio
 
-## Commands
+- `/play song name` and `/audio song name` resolve song names directly through Hep.gg's music library.
+- Supported public media URLs are handled by Hep.gg `/media`.
+- Audio is delivered/played as MP3 through the existing voice and Telegram audio paths.
+- Track artwork and metadata are used when Hep.gg provides them.
 
-- `/play song name` searches the Hep.gg music library and plays the MP3 through the existing PyTgCalls voice layer.
-- `/play https://...` sends a supported public media URL to Hep.gg's unified `/media` endpoint.
-- `/audio song name` sends the resolved MP3 to Telegram.
-- `/queue`, `/now`, `/skip`, `/pause`, `/resume`, and `/stop` retain the existing queue and player controls.
+## Personal favourite songs
 
-Song-name searches use Hep.gg's library search; supported media URLs use the unified downloader. A track may be unavailable if the provider cannot find or fetch it. Hep.gg errors are translated into distinct user-facing replies.
+- Tap `♡ FAVOURITE` on the current player card to save that track to your personal favourites database. Each Telegram user has a separate list. Repeated taps do not create duplicates.
+- `/fav` lists saved tracks and their numbers.
+- `/playfav 3` plays or queues favourite number 3.
+- `/playfav all` plays/queues the first 50 saved favourites in order. If a track is already playing, saved favourites are added to the end of the existing queue.
+- Favourite data uses the project's existing SQLite/PostgreSQL database, depending on `DATABASE_URL`.
 
-FFmpeg remains installed for seeking/media handling.
+## Other commands
+
+- `/queue`, `/now`, `/skip`, `/pause`, `/resume`, and `/stop` keep the existing queue/player controls.
+- The favourite button is only on the voice player card; `/audio` remains a straightforward audio-delivery command.
+
+Keep API keys private and do not commit real keys to GitHub. FFmpeg remains installed for the existing seeking/media handling.
+
+
+### Favourite songs limit
+Each Telegram user can save up to 10 favourite songs. `/fav` lists those saved tracks, and `/playfav all` plays/queues at most those 10 songs.
