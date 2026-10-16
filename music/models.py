@@ -37,3 +37,5 @@ class PlayerState:
     playback_path: Optional[str] = None
     preload_task: object | None = None
     preload_for: Optional[Track] = None
+    loop_infinite: bool = False
+    loop_remaining: int = 0

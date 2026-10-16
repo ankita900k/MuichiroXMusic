@@ -16,7 +16,7 @@ from . import runtime
 from .downloader import HepMusicError, cleanup_media, download_audio, resolve
 from .manager import player_manager
 from .models import Track
-from .favorites import add_favorite, list_favorites
+from .favorites import add_favorite, list_favorites, delete_favorite
 from .ui import player_keyboard
 import monitoring
 
@@ -494,6 +494,9 @@ async def _send_audio(update, track: Track):
 
 async def _advance(chat_id: int, bot):
     state = player_manager.get(chat_id)
+    # A manual skip or normal queue advance ends the current track's loop.
+    state.loop_infinite = False
+    state.loop_remaining = 0
     old = state.current
     old_path = state.playback_path or (old.media_path if old else None)
     next_track = player_manager.pop_next(chat_id)
@@ -581,6 +584,8 @@ async def _stop(chat_id: int, bot):
         state.current = None
         state.queue.clear()
         state.paused = False
+        state.loop_infinite = False
+        state.loop_remaining = 0
         state.playback_path = None
         state.position_offset = 0.0
         state.paused_position = 0.0
@@ -673,6 +678,55 @@ async def fav_command(update, context):
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
+
+
+async def delfav_command(update, context):
+    """Delete one favourite belonging only to the requesting Telegram user."""
+    user = update.effective_user
+    message = update.effective_message
+    if not user or not message:
+        return
+
+    favorites = list_favorites(user.id, limit=10)
+    if not favorites:
+        await message.reply_text("💗 <b>Your favourites are already empty.</b>", parse_mode=ParseMode.HTML)
+        return
+
+    raw = " ".join(context.args).strip()
+    if not raw:
+        lines = [
+            f"<b>{i}.</b> {escape(item['title'])} — {escape(item.get('artist') or 'Unknown Artist')}"
+            for i, item in enumerate(favorites, 1)
+        ]
+        await message.reply_text(
+            "🗑️ <b>DELETE A FAVOURITE</b>\\n\\n"
+            + "\\n".join(lines)
+            + "\\n\\nUse <code>/delfav 2</code> to delete favourite number 2.",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+
+    if not raw.isdigit() or int(raw) < 1:
+        await message.reply_text("Usage: <code>/delfav 2</code> — choose a number from <code>/fav</code>.", parse_mode=ParseMode.HTML)
+        return
+
+    index = int(raw)
+    if index > len(favorites):
+        await message.reply_text(
+            f"❌ You have only {len(favorites)} favourite song(s). Use /fav to see the list.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    deleted = delete_favorite(user.id, index)
+    if deleted:
+        await message.reply_text(
+            f"🗑️ Deleted favourite <b>#{index}</b>: <b>{escape(deleted['title'])}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await message.reply_text("⚠️ I couldn't find that favourite. Please run /fav and try again.")
 
 
 async def playfav_command(update, context):
@@ -822,6 +876,61 @@ async def resume_command(update, context):
         await _edit_player_keyboard(context.bot, chat_id, state)
 
 
+async def loop_command(update, context):
+    """Loop the current track forever or for a specified total play count."""
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat:
+        return
+    if not await _require_music_admin(update, context):
+        return
+
+    state = player_manager.get(chat.id)
+    if not state.current:
+        await message.reply_text("🎵 Nothing is playing right now. Start a song first, then use /loop.")
+        return
+
+    raw = " ".join(context.args).strip().lower()
+    if raw in {"off", "disable", "stop", "0"}:
+        state.loop_infinite = False
+        state.loop_remaining = 0
+        await message.reply_text("🔁 Song loop disabled. The queue will continue normally.")
+        return
+
+    if not raw:
+        # Bare /loop toggles infinite looping.
+        if state.loop_infinite:
+            state.loop_infinite = False
+            state.loop_remaining = 0
+            await message.reply_text("🔁 Infinite loop disabled.")
+        else:
+            state.loop_infinite = True
+            state.loop_remaining = 0
+            await message.reply_text(f"🔁 Infinite loop enabled for: <b>{escape(state.current.title)}</b>", parse_mode=ParseMode.HTML)
+        return
+
+    if not raw.isdigit() or int(raw) < 1:
+        await message.reply_text(
+            "Usage: <code>/loop</code> (toggle infinite), <code>/loop 5</code> (play 5 times total), or <code>/loop off</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    total_plays = int(raw)
+    if total_plays > 100:
+        await message.reply_text("⚠️ Please choose a repeat count from 1 to 100.")
+        return
+    state.loop_infinite = False
+    state.loop_remaining = total_plays - 1
+    if total_plays == 1:
+        await message.reply_text("🔁 Repeat count set to 1: this song will not repeat.")
+    else:
+        await message.reply_text(
+            f"🔁 <b>{escape(state.current.title)}</b> will play <b>{total_plays} times total</b>, then the queue continues.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def stop_command(update, context):
     if not await _require_music_admin(update, context):
         return
@@ -947,12 +1056,14 @@ def get_handlers():
         CommandHandler("play", play_command),
         CommandHandler("audio", audio_command),
         CommandHandler("fav", fav_command),
+        CommandHandler("delfav", delfav_command),
         CommandHandler("playfav", playfav_command),
         CommandHandler("queue", queue_command),
         CommandHandler("now", now_command),
         CommandHandler("skip", skip_command),
         CommandHandler("pause", pause_command),
         CommandHandler("resume", resume_command),
+        CommandHandler("loop", loop_command),
         CommandHandler("stop", stop_command),
         CallbackQueryHandler(callback, pattern=r"^music:"),
     ]
@@ -966,6 +1077,28 @@ async def on_stream_end(chat_id: int, bot):
         if state.transition or now < state.ignore_stream_end_until or not state.current:
             return
         try:
+            # Repeat the same current media without deleting/re-downloading it.
+            should_repeat = state.loop_infinite or state.loop_remaining > 0
+            if should_repeat:
+                track = state.current
+                if not track or not track.media_path or not os.path.exists(track.media_path):
+                    raise RuntimeError("Current track media is unavailable for looping")
+                state.transition = True
+                state.ignore_stream_end_until = asyncio.get_running_loop().time() + 5.0
+                try:
+                    await runtime.voice.play(chat_id, track.media_path)
+                    if not state.loop_infinite:
+                        state.loop_remaining = max(0, state.loop_remaining - 1)
+                    state.position_offset = 0.0
+                    state.paused_position = 0.0
+                    state.started_at = asyncio.get_running_loop().time()
+                    state.paused = False
+                    await _send_now_playing(bot, chat_id, state)
+                    _schedule_preload(chat_id)
+                    monitoring.music_event(f"TRACK LOOPED · chat_id={chat_id} · title={track.title!r} · remaining={state.loop_remaining} · infinite={state.loop_infinite}")
+                finally:
+                    state.transition = False
+                return
             await _advance(chat_id, bot)
         except Exception as exc:
             log.exception("Failed to auto-play next track in chat %s", chat_id)

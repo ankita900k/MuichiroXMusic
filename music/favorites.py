@@ -102,3 +102,32 @@ def list_favorites(user_id: int, limit: int | None = None) -> list[dict[str, Any
     with _DB_LOCK:
         cursor.execute(sql, params)
         return [_row_dict(row) for row in cursor.fetchall()]
+
+
+def delete_favorite(user_id: int, position: int) -> dict[str, Any] | None:
+    """Delete a favourite by its displayed 1-based position for this user only."""
+    user_id = int(user_id)
+    position = int(position)
+    if position < 1:
+        return None
+    with _DB_LOCK:
+        select_sql = (
+            "SELECT id, user_id, source_key, title, artist, source_url, thumbnail, duration, provider, isrc, album, added_at "
+            "FROM music_favorites WHERE user_id = %s ORDER BY id ASC"
+            if USE_POSTGRES else
+            "SELECT id, user_id, source_key, title, artist, source_url, thumbnail, duration, provider, isrc, album, added_at "
+            "FROM music_favorites WHERE user_id = ? ORDER BY id ASC"
+        )
+        cursor.execute(select_sql, (user_id,))
+        rows = cursor.fetchall()
+        if position > len(rows):
+            return None
+        item = _row_dict(rows[position - 1])
+        delete_sql = (
+            "DELETE FROM music_favorites WHERE id = %s AND user_id = %s"
+            if USE_POSTGRES else
+            "DELETE FROM music_favorites WHERE id = ? AND user_id = ?"
+        )
+        cursor.execute(delete_sql, (item["id"], user_id))
+        db.commit()
+        return item
