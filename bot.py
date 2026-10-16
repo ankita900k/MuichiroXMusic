@@ -5,6 +5,7 @@ from telegram import ChatPermissions, Update, BotCommand, InlineKeyboardButton, 
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler, ChatMemberHandler
 from telegram.constants import ChatMemberStatus, ChatType, ChatAction, ParseMode
 from datetime import datetime, timedelta
+from pyrogram import Client, filters as pyrogram_filters
 import requests
 import contextlib
 import random
@@ -2631,256 +2632,198 @@ async def left_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         print(f"❌ left_member database error: {e}")
 
+
 TAG_MESSAGES = [
     "📢 <b>Attention everyone!</b>",
     "🔥 <b>Please check the group!</b>",
     "⚡ <b>Everyone gather here!</b>",
     "🚀 <b>Important message for you all!</b>",
 ]
+pyrogram_client = Client(
+    "muichiro_assistant",
+    api_id=int(os.environ.get("API_ID")),
+    api_hash=os.environ.get("API_HASH"),
+    session_string=os.environ.get("SESSION_STRING")
+)
+BATCH_SIZE = 5
+BATCH_DELAY = 2
+
+# Tracks active tag operations by chat ID.
+tagall_running: dict[int, bool] = {}
+
+# Prevents two tag operations from starting simultaneously.
+tagall_locks: dict[int, asyncio.Lock] = {}
+
+
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if not chat or not user:
+        return False
+
+    try:
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        return member.status in (
+            ChatMemberStatus.ADMINISTRATOR,
+            ChatMemberStatus.OWNER,
+        )
+    except Exception:
+        return False
 
 
 async def tagall(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     chat = update.effective_chat
     user = update.effective_user
-    message = update.message
-
-    # ==========================================
-    # BASIC VALIDATION
-    # ==========================================
+    message = update.effective_message
 
     if not chat or not user or not message:
         return
 
-    if chat.type not in ["group", "supergroup"]:
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.reply_text("❌ This command only works in groups.")
+        return
+
+    if not await is_admin(update, context):
+        await message.reply_text("❌ Only group admins can use /tagall.")
+        return
+
+    lock = tagall_locks.setdefault(chat.id, asyncio.Lock())
+
+    if lock.locked() or tagall_running.get(chat.id):
         await message.reply_text(
-            "❌ This command can only be used in groups."
+            "⚠️ TagAll is already running.\nUse /stoptag to stop it."
         )
         return
 
-    # ==========================================
-    # CHECK ADMIN
-    # ==========================================
-
+    # IMPORTANT:
+    # Replace pyrogram_client with your running Pyrogram Client instance.
     try:
-        member = await context.bot.get_chat_member(
-            chat.id,
-            user.id
-        )
+        await message.reply_text("🔎 Fetching group participants with Pyrogram...")
 
-    except Exception as e:
-        print(f"❌ Admin check failed: {e}")
+        participants = {}
 
+        async for member in pyrogram_client.get_chat_members(chat.id):
+            participant = member.user
+
+            if not participant or participant.is_deleted:
+                continue
+
+            # Avoid duplicate mentions.
+            participants[participant.id] = participant
+
+        users = list(participants.values())
+
+    except Exception as exc:
+        print(f"TagAll participant fetch failed: {exc}")
         await message.reply_text(
-            "❌ I couldn't verify your admin status."
+            "❌ Couldn't retrieve group participants through Pyrogram.\n"
+            "Check the client session, group access and Telegram restrictions."
         )
         return
-
-    if member.status not in [
-        ChatMemberStatus.ADMINISTRATOR,
-        ChatMemberStatus.OWNER
-    ]:
-        await message.reply_text(
-            "❌ Only admins can use this command."
-        )
-        return
-
-    # ==========================================
-    # CHECK IF TAGALL ALREADY RUNNING
-    # ==========================================
-
-    if tagall_running.get(chat.id):
-
-        await message.reply_text(
-            "⚠️ TagAll is already running in this group.\n"
-            "Use /stoptag to stop it."
-        )
-        return
-
-    # ==========================================
-    # LOAD MEMBERS FROM DATABASE
-    # ==========================================
-
-    try:
-
-        cursor.execute(
-            """
-            SELECT user_id, full_name
-            FROM members
-            WHERE chat_id = %s
-            ORDER BY user_id
-            """,
-            (chat.id,)
-        )
-
-        users = cursor.fetchall()
-
-    except Exception as e:
-
-        db.rollback()
-
-        print(f"❌ TagAll database error: {e}")
-
-        await message.reply_text(
-            "❌ Failed to load members from the database."
-        )
-        return
-
-    # ==========================================
-    # CHECK MEMBERS
-    # ==========================================
 
     if not users:
-
-        await message.reply_text(
-            "❌ No saved members found for this group."
-        )
+        await message.reply_text("❌ No participants could be retrieved.")
         return
 
-    total = len(users)
     tagged = 0
+    total = len(users)
 
-    # ==========================================
-    # START TAGALL
-    # ==========================================
+    async with lock:
+        tagall_running[chat.id] = True
 
-    tagall_running[chat.id] = True
+        try:
+            starter = escape(user.first_name or "Admin")
 
-    try:
-
-        await message.reply_text(
-            f"📢 <b>TagAll Started</b>\n\n"
-            f"👤 Started by: "
-            f"<a href='tg://user?id={user.id}'>"
-            f"{user.first_name}"
-            f"</a>\n"
-            f"👥 Members found: {total}\n"
-            f"📦 Batch size: 5",
-            parse_mode="HTML"
-        )
-
-        batch = []
-
-        # ======================================
-        # TAG MEMBERS
-        # ======================================
-
-        for uid, name in users:
-
-            # Check /stoptag
-            if not tagall_running.get(chat.id):
-
-                await message.reply_text(
-                    f"🛑 <b>TagAll Stopped</b>\n\n"
-                    f"👤 Stopped by: "
-                    f"<a href='tg://user?id={user.id}'>"
-                    f"{user.first_name}"
-                    f"</a>\n"
-                    f"👥 Tagged: {tagged}/{total}",
-                    parse_mode="HTML"
-                )
-
-                return
-
-            # Safe fallback for missing names
-            name = name or "Member"
-
-            mention = (
-                f"<a href='tg://user?id={uid}'>"
-                f"{name}"
-                f"</a>"
+            await message.reply_text(
+                f"📢 <b>TagAll Started</b>\n\n"
+                f"👤 Started by: "
+                f'<a href="tg://user?id={user.id}">{starter}</a>\n'
+                f"👥 Participants fetched: {total}\n"
+                f"📦 Batch size: {BATCH_SIZE}",
+                parse_mode=ParseMode.HTML,
             )
 
-            batch.append(mention)
+            for start in range(0, total, BATCH_SIZE):
+                if not tagall_running.get(chat.id, False):
+                    await message.reply_text(
+                        f"🛑 <b>TagAll stopped.</b>\n"
+                        f"👥 Tagged: {tagged}/{total}",
+                        parse_mode=ParseMode.HTML,
+                    )
+                    return
 
-            # ==================================
-            # SEND 5 MEMBERS
-            # ==================================
+                batch = users[start:start + BATCH_SIZE]
+                mentions = []
 
-            if len(batch) == 5:
+                for participant in batch:
+                    name = escape(
+                        " ".join(
+                            part for part in (
+                                participant.first_name,
+                                participant.last_name,
+                            ) if part
+                        ) or "Member"
+                    )
+
+                    mentions.append(
+                        f'<a href="tg://user?id={participant.id}">'
+                        f"{name}</a>"
+                    )
 
                 text = (
                     f"{random.choice(TAG_MESSAGES)}\n\n"
-                    + "\n".join(batch)
+                    + "\n".join(mentions)
                 )
 
                 await message.reply_text(
                     text,
-                    parse_mode="HTML"
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
                 )
 
                 tagged += len(batch)
-                batch.clear()
 
-                # Small delay between messages
-                await asyncio.sleep(1)
-
-        # ======================================
-        # SEND REMAINING MEMBERS
-        # ======================================
-
-        if batch:
-
-            text = (
-                f"{random.choice(TAG_MESSAGES)}\n\n"
-                + "\n".join(batch)
-            )
+                if start + BATCH_SIZE < total:
+                    await asyncio.sleep(BATCH_DELAY)
 
             await message.reply_text(
-                text,
-                parse_mode="HTML"
+                f"✅ <b>TagAll Completed!</b>\n"
+                f"👥 Tagged: {tagged}/{total}",
+                parse_mode=ParseMode.HTML,
             )
 
-            tagged += len(batch)
+        except Exception as exc:
+            print(f"TagAll error in {chat.id}: {exc}")
+            await message.reply_text(
+                f"❌ TagAll encountered an error.\n"
+                f"👥 Tagged before error: {tagged}/{total}"
+            )
 
-            batch.clear()
+        finally:
+            tagall_running.pop(chat.id, None)
 
-        # ======================================
-        # COMPLETED
-        # ======================================
-
-        await message.reply_text(
-            f"✅ <b>TagAll Completed!</b>\n\n"
-            f"👤 Started by: "
-            f"<a href='tg://user?id={user.id}'>"
-            f"{user.first_name}"
-            f"</a>\n"
-            f"👥 Tagged: {tagged}/{total}",
-            parse_mode="HTML"
-        )
-
-    except Exception as e:
-
-        print(f"❌ TagAll error: {e}")
-
-        await message.reply_text(
-            "❌ TagAll stopped because an error occurred."
-        )
-
-    finally:
-
-        # Always clean up the running state
-        tagall_running.pop(chat.id, None)
 
 async def stoptag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    user = update.effective_user
+    message = update.effective_message
 
-    member = await context.bot.get_chat_member(chat.id, user.id)
+    if not chat or not message:
+        return
 
-    if member.status not in [
-        ChatMemberStatus.ADMINISTRATOR,
-        ChatMemberStatus.OWNER
-    ]:
-        await update.message.reply_text("❌ Only admins can use this command.")
+    if chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        await message.reply_text("❌ This command only works in groups.")
+        return
+
+    if not await is_admin(update, context):
+        await message.reply_text("❌ Only group admins can use /stoptag.")
         return
 
     if tagall_running.get(chat.id):
         tagall_running[chat.id] = False
-        await update.message.reply_text("🛑TagAll Stoped...")
+        await message.reply_text("🛑 TagAll stop requested.")
     else:
-        await update.message.reply_text("❌ No TagAll is currently running.")
-
+        await message.reply_text("ℹ️ No TagAll operation is running.")
 # ==========================================
 # TRANSLATOR
 # ==========================================
