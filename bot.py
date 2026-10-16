@@ -2689,116 +2689,121 @@ async def tagall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lock = tagall_locks.setdefault(chat.id, asyncio.Lock())
-
     if lock.locked() or tagall_running.get(chat.id):
         await message.reply_text(
             "⚠️ TagAll is already running.\nUse /stoptag to stop it."
         )
         return
 
-    # IMPORTANT:
-    # Replace pyrogram_client with your running Pyrogram Client instance.
-    try:
-        await message.reply_text("🔎 Fetching group participants with Pyrogram...")
-
-        participants = {}
-
-        async for member in pyrogram_client.get_chat_members(chat.id):
-            participant = member.user
-
-            if not participant or participant.is_deleted:
-                continue
-
-            # Avoid duplicate mentions.
-            participants[participant.id] = participant
-
-        users = list(participants.values())
-
-    except Exception as exc:
-        print(f"TagAll participant fetch failed: {exc}")
-        await message.reply_text(
-            "❌ Couldn't retrieve group participants through Pyrogram.\n"
-            "Check the client session, group access and Telegram restrictions."
-        )
-        return
-
-    if not users:
-        await message.reply_text("❌ No participants could be retrieved.")
-        return
-
     tagged = 0
-    total = len(users)
+    total = 0
 
+    # Hold the per-chat lock during client startup, participant fetching,
+    # and tagging so simultaneous /tagall requests cannot race the session.
     async with lock:
         tagall_running[chat.id] = True
-
         try:
-            starter = escape(user.first_name or "Admin")
+            await message.reply_text("🔎 Connecting assistant and fetching participants...")
 
+            # This is the existing Pyrogram Client configured with SESSION_STRING.
+            # Start it lazily because this bot.py does not start it during app startup.
+            if not pyrogram_client.is_connected:
+                await pyrogram_client.start()
+                print("✅ TagAll: Pyrogram assistant client started")
+
+            participants = {}
+            async for member in pyrogram_client.get_chat_members(chat.id):
+                if not tagall_running.get(chat.id, False):
+                    await message.reply_text("🛑 TagAll stopped while fetching participants.")
+                    return
+
+                participant = getattr(member, "user", None)
+                if not participant or getattr(participant, "is_deleted", False):
+                    continue
+
+                participants[participant.id] = participant
+
+            users = list(participants.values())
+            total = len(users)
+
+            if not users:
+                await message.reply_text(
+                    "❌ Pyrogram returned no participants for this group. "
+                    "Telegram may restrict participant access."
+                )
+                return
+
+            starter = html.escape(user.first_name or "Admin")
             await message.reply_text(
                 f"📢 <b>TagAll Started</b>\n\n"
-                f"👤 Started by: "
-                f'<a href="tg://user?id={user.id}">{starter}</a>\n'
+                f'👤 Started by: <a href="tg://user?id={user.id}">{starter}</a>\n'
                 f"👥 Participants fetched: {total}\n"
                 f"📦 Batch size: {BATCH_SIZE}",
                 parse_mode=ParseMode.HTML,
             )
 
-            for start in range(0, total, BATCH_SIZE):
+            for start_index in range(0, total, BATCH_SIZE):
                 if not tagall_running.get(chat.id, False):
                     await message.reply_text(
-                        f"🛑 <b>TagAll stopped.</b>\n"
-                        f"👥 Tagged: {tagged}/{total}",
+                        f"🛑 <b>TagAll stopped.</b>\n👥 Tagged: {tagged}/{total}",
                         parse_mode=ParseMode.HTML,
                     )
                     return
 
-                batch = users[start:start + BATCH_SIZE]
+                batch = users[start_index:start_index + BATCH_SIZE]
                 mentions = []
-
                 for participant in batch:
-                    name = escape(
-                        " ".join(
-                            part for part in (
-                                participant.first_name,
-                                participant.last_name,
-                            ) if part
-                        ) or "Member"
-                    )
-
+                    name = " ".join(
+                        part for part in (
+                            getattr(participant, "first_name", None),
+                            getattr(participant, "last_name", None),
+                        ) if part
+                    ) or "Member"
+                    name = html.escape(name)
                     mentions.append(
-                        f'<a href="tg://user?id={participant.id}">'
-                        f"{name}</a>"
+                        f'<a href="tg://user?id={participant.id}">{name}</a>'
                     )
-
-                text = (
-                    f"{random.choice(TAG_MESSAGES)}\n\n"
-                    + "\n".join(mentions)
-                )
 
                 await message.reply_text(
-                    text,
+                    f"{random.choice(TAG_MESSAGES)}\n\n" + "\n".join(mentions),
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )
-
                 tagged += len(batch)
 
-                if start + BATCH_SIZE < total:
+                if start_index + BATCH_SIZE < total:
                     await asyncio.sleep(BATCH_DELAY)
 
             await message.reply_text(
-                f"✅ <b>TagAll Completed!</b>\n"
-                f"👥 Tagged: {tagged}/{total}",
+                f"✅ <b>TagAll Completed!</b>\n👥 Tagged: {tagged}/{total}",
                 parse_mode=ParseMode.HTML,
             )
 
         except Exception as exc:
-            print(f"TagAll error in {chat.id}: {exc}")
-            await message.reply_text(
-                f"❌ TagAll encountered an error.\n"
-                f"👥 Tagged before error: {tagged}/{total}"
-            )
+            print(f"❌ TagAll error in chat {chat.id}: {type(exc).__name__}: {exc}")
+            detail = str(exc)
+            if "not been started" in detail.lower() or "not connected" in detail.lower():
+                user_message = (
+                    "❌ The assistant Pyrogram session could not connect. "
+                    "Check SESSION_STRING, API_ID and API_HASH in Render."
+                )
+            elif "peer" in detail.lower() or "chat_id" in detail.lower():
+                user_message = (
+                    "❌ The assistant cannot access this group. Make sure the "
+                    "assistant account is in the group and can view its members."
+                )
+            else:
+                user_message = (
+                    "❌ TagAll failed while fetching or mentioning participants. "
+                    "Check the Render logs for the exact error."
+                )
+
+            try:
+                await message.reply_text(
+                    f"{user_message}\n👥 Tagged: {tagged}/{total}"
+                )
+            except Exception:
+                pass
 
         finally:
             tagall_running.pop(chat.id, None)
