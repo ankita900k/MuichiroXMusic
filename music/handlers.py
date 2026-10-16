@@ -22,6 +22,9 @@ import monitoring
 
 log = logging.getLogger(__name__)
 
+# Serialize auto-join attempts per group to prevent duplicate invites and join races.
+_assistant_join_locks: dict[int, asyncio.Lock] = {}
+
 REWIND_SECONDS = 10
 FORWARD_SECONDS = 10
 TRACKER_INTERVAL = 3
@@ -307,40 +310,72 @@ async def _prepare_track(track: Track):
 
 
 async def _ensure_assistant_in_group(bot, chat_id: int):
-    """Automatically join the Pyrogram assistant using a temporary invite."""
+    """Reliably ensure assistant membership using fresh, short-lived invites.
+
+    A per-chat lock prevents parallel /play requests from creating competing
+    invite links. Each retry creates a new link because a previous one may have
+    expired, been revoked, or been consumed by a concurrent join.
+    """
     voice = runtime.voice
     if voice is None:
         raise RuntimeError("Music voice layer is not initialized")
 
-    try:
-        member = await voice.client.get_chat_member(chat_id, "me")
-        status = getattr(member, "status", "")
-        if status not in {"left", "kicked", "banned"}:
-            await voice._warm_dialog_cache(chat_id)
-            return
-    except Exception as exc:
-        log.debug("Assistant membership check for %s failed: %s", chat_id, exc)
-
-    try:
-        invite = await bot.create_chat_invite_link(
-            chat_id=chat_id,
-            name="Muichiro music assistant",
-            expire_date=datetime.now(timezone.utc) + timedelta(minutes=5),
-            member_limit=1,
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            "The bot could not create an invite link for the music assistant. "
-            "Make sure the bot is an administrator with permission to invite users via link."
-        ) from exc
-
-    try:
-        await voice.ensure_joined(chat_id, invite.invite_link)
-    finally:
+    lock = _assistant_join_locks.setdefault(int(chat_id), asyncio.Lock())
+    async with lock:
+        # Fast path: don't create an invite if the assistant is already present.
         try:
-            await bot.revoke_chat_invite_link(chat_id, invite.invite_link)
-        except Exception:
-            log.debug("Could not revoke temporary invite in %s", chat_id, exc_info=True)
+            member = await voice.client.get_chat_member(chat_id, "me")
+            status = str(getattr(member, "status", "")).lower()
+            if status not in {"left", "kicked", "banned"}:
+                await voice._ensure_peer_cached(chat_id)
+                return
+        except Exception as exc:
+            log.debug("Assistant membership check for %s failed; will attempt recovery: %s", chat_id, exc)
+
+        last_error = None
+        for attempt in range(3):
+            invite = None
+            try:
+                invite = await bot.create_chat_invite_link(
+                    chat_id=chat_id,
+                    name="Muichiro assistant auto-join",
+                    expire_date=datetime.now(timezone.utc) + timedelta(minutes=5),
+                    member_limit=1,
+                )
+                await voice.ensure_joined(chat_id, invite.invite_link)
+                # Ensure PyTgCalls can resolve the peer before playback starts.
+                await voice._ensure_peer_cached(chat_id)
+                log.info("Assistant is ready for voice playback in %s", chat_id)
+                return
+            except Exception as exc:
+                last_error = exc
+                message = str(exc).lower()
+                log.warning(
+                    "Assistant auto-join attempt %s/3 failed for chat %s: %s: %s",
+                    attempt + 1, chat_id, type(exc).__name__, exc,
+                )
+                # Don't spin on permissions, bans, or a group that disallows joins.
+                permanent = any(term in message for term in (
+                    "chat_admin_required", "not enough rights", "administrator rights",
+                    "user_banned_in_channel", "kicked", "banned", "invite users",
+                    "bot is not a member", "chat not found", "peer_id_invalid"
+                ))
+                if permanent or attempt == 2:
+                    break
+                await asyncio.sleep(0.7 * (2 ** attempt))
+            finally:
+                if invite is not None:
+                    try:
+                        await bot.revoke_chat_invite_link(chat_id, invite.invite_link)
+                    except Exception as revoke_exc:
+                        log.debug("Temporary invite cleanup failed for %s: %s", chat_id, revoke_exc)
+
+        raise RuntimeError(
+            "Muichiro could not confirm that the music assistant is ready to join this group. "
+            "Check the bot's invite-users permission, whether the assistant is banned, and whether "
+            "the group allows the assistant account to join. "
+            f"Last error: {type(last_error).__name__}: {last_error}"
+        ) from last_error
 
 
 async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):

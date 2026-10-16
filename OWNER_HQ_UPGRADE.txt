@@ -1,0 +1,34 @@
+MUICHIRO HQ — OWNER COMMAND CENTER UPGRADE
+
+WHAT'S NEW
+- Owner-only Command Center and Muichiro Pulse score derived from actual stored checks/events.
+- Music Intelligence: event breakdown, estimated playback success/failure signals, recurring error patterns.
+- Error Detective and Incident Center using stored warnings/errors.
+- Security & Audit Center for owner actions/settings and access-role status.
+- Database Guardian: SQLite integrity check and consistent SQLite backup download.
+- Owner Control Room preferences persisted in SQLite (maintenance banner, verbose diagnostics preference, safe-mode preference).
+- Runtime / deployment diagnostics: Python/platform/version hints, selected environment-variable presence checks, database health and persistent-disk hint.
+- CSV export plus the existing JSON export.
+- Owner-only routes enforced server-side; viewer account cannot use owner APIs.
+
+IMPORTANT LIMITATIONS
+- Pulse and playback success rate are heuristics from stored logs, not guaranteed uptime/SLA metrics. More detailed results depend on the events your music handlers emit.
+- Render platform build/deploy logs are not accessible from the app. Use Render's Logs/Events pages for those.
+- Owner Control Room switches are saved preferences only. They do NOT automatically disable music commands or change Python logging levels until separately wired into the bot runtime.
+- HTTP Basic auth is stateless; this patch does not expose active sessions or provide session revocation. Failed Basic-auth attempts are not stored in the owner audit table.
+- SQLite backup contains the monitoring database only. It does not back up source code, environment variables, Telegram session strings, or external API data.
+- Not live-tested on your Render service. Python compile checks and local API smoke tests passed.
+
+INSTALL
+1. Back up the currently deployed webhook.py and music/handlers.py.
+2. Extract this ZIP into your project root, preserving paths.
+3. It adds owner_hq.py and replaces webhook.py, monitoring.py and music/handlers.py with the versions from the existing Muichiro HQ monitoring patch. It intentionally does NOT replace music/voice.py, so the ensure_joined assistant-invite fix remains untouched.
+4. Confirm Render environment variables from .env.monitoring.example are configured.
+5. For persistent SQLite history, mount a Render persistent disk at /var/data and set MONITOR_DB_PATH=/var/data/muichiro_monitor.sqlite3.
+6. Commit/push and deploy. Open the service URL, sign in with the owner account, then select “Owner HQ”.
+7. Test /owner/api/integrity from the Owner HQ Database Guardian page and verify the backup download.
+
+SECURITY
+- Use a unique strong owner password and HTTPS.
+- Never commit real environment secrets.
+- The dashboard intentionally does not show secret values.

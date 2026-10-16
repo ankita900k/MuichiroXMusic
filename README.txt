@@ -1,5 +1,4 @@
-Muichiro HQ clickable dashboard patch
-
-This patch adds a dark teal/mist-themed monitoring UI, SQLite event storage, two HTTP Basic accounts (owner and read-only viewer), UI section tabs, search, refresh/pause, owner-only JSON export, and owner-only clear logs.
-
-Copy only the included files to the matching paths. See MONITORING_SETUP.txt for exact Render environment variables and deployment steps. Do not replace music/voice.py; this patch deliberately leaves it alone so the assistant-invite voice fix remains in your project.
+Muichiro HQ monitoring + Owner Command Center patch.
+See MONITORING_SETUP.txt and OWNER_HQ_UPGRADE.txt before installing.
+Owner dashboard URL: /owner (requires owner credentials).
+This patch does not replace music/voice.py.

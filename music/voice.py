@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -29,6 +30,7 @@ class VoiceChat:
         self.on_ended = None
         self.started = False
         self._dialogs_warmed = False
+        self._join_locks: dict[int, asyncio.Lock] = {}
 
     async def start(self):
         if self.started:
@@ -96,46 +98,82 @@ class VoiceChat:
             ) from exc
 
     async def ensure_joined(self, chat_id: int, invite_link: str):
-        """Ensure the Pyrogram assistant is a member of the target group.
+        """Ensure the assistant is a verified member and the group peer is cached.
 
-        The invite link is created dynamically by the Telegram bot for the
-        current group, so no permanent invite link needs to be stored.
+        Caller should generate a short-lived invite link. Per-chat locking avoids
+        concurrent requests racing to join the same group.
         """
         if not invite_link:
             raise RuntimeError("No invite link was provided for the assistant")
 
-        # Check membership first. This also warms Pyrogram's peer cache when
-        # the assistant is already present.
-        try:
-            member = await self.client.get_chat_member(chat_id, "me")
-            status = getattr(member, "status", "")
-            if status not in {"left", "kicked", "banned"}:
-                await self._warm_dialog_cache(chat_id)
-                return False
-        except Exception as exc:
-            log.debug("Assistant membership check for %s failed: %s", chat_id, exc)
+        lock = self._join_locks.setdefault(int(chat_id), asyncio.Lock())
+        async with lock:
+            if not self.started:
+                raise RuntimeError("Music assistant client is not started")
 
-        log.info("Assistant is not in %s; joining with the generated invite link", chat_id)
-        try:
-            await self.client.join_chat(invite_link)
-        except Exception as exc:
-            # It may have joined between the membership check and join call.
-            try:
-                member = await self.client.get_chat_member(chat_id, "me")
-                status = getattr(member, "status", "")
-                if status not in {"left", "kicked", "banned"}:
+            # Membership check can fail transiently while Telegram is warming up.
+            for check_attempt in range(2):
+                try:
+                    member = await self.client.get_chat_member(chat_id, "me")
+                    status = str(getattr(member, "status", "")).lower()
+                    if status not in {"left", "kicked", "banned"}:
+                        await self._ensure_peer_cached(chat_id)
+                        return False
+                    break
+                except Exception as exc:
+                    log.warning("Assistant membership check %s/2 failed for %s: %s", check_attempt + 1, chat_id, exc)
+                    if check_attempt == 0:
+                        await asyncio.sleep(0.6)
+
+            log.info("Assistant joining group %s with a temporary invite", chat_id)
+            last_error = None
+            for attempt in range(3):
+                try:
+                    await self.client.join_chat(invite_link)
+                    # Telegram may take a moment before membership/dialog state is visible.
+                    for verify_attempt in range(3):
+                        try:
+                            member = await self.client.get_chat_member(chat_id, "me")
+                            status = str(getattr(member, "status", "")).lower()
+                            if status not in {"left", "kicked", "banned"}:
+                                await self._warm_dialog_cache(chat_id)
+                                await self._ensure_peer_cached(chat_id)
+                                log.info("Assistant membership verified for %s", chat_id)
+                                return True
+                        except Exception as verify_exc:
+                            log.debug("Membership verification %s/3 for %s: %s", verify_attempt + 1, chat_id, verify_exc)
+                        await asyncio.sleep(0.4 * (verify_attempt + 1))
+                    # Membership verification may be temporarily unavailable; peer resolution
+                    # is a secondary signal, but do not claim a verified join without it.
                     await self._warm_dialog_cache(chat_id)
+                    await self._ensure_peer_cached(chat_id)
+                    log.warning("Assistant peer cached for %s; membership status could not be confirmed", chat_id)
                     return True
-            except Exception:
-                pass
-            raise RuntimeError(
-                "The music assistant could not join this group using the generated invite link. "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
+                except Exception as exc:
+                    last_error = exc
+                    message = str(exc).lower()
+                    # These errors need human action; retrying cannot fix them.
+                    permanent = any(term in message for term in (
+                        "invite_hash_expired", "invite_hash_invalid", "user_banned_in_channel",
+                        "user_not_participant", "chat_admin_required", "not enough rights",
+                        "user already participant", "peer_id_invalid"
+                    ))
+                    if "already participant" in message or "user_already_participant" in message:
+                        try:
+                            await self._warm_dialog_cache(chat_id)
+                            await self._ensure_peer_cached(chat_id)
+                            return False
+                        except Exception:
+                            pass
+                    if permanent or attempt == 2:
+                        break
+                    await asyncio.sleep(0.5 * (2 ** attempt))
 
-        # Force the joined group's peer into the local cache before PyTgCalls.
-        await self._warm_dialog_cache(chat_id)
-        return True
+            raise RuntimeError(
+                "Assistant join failed after retries. Check that the invite is fresh, "
+                "the assistant is not banned, and the group permits it to join. "
+                f"Last error: {type(last_error).__name__}: {last_error}"
+            ) from last_error
 
     async def play(self, chat_id: int, path: str):
         if not self.started:

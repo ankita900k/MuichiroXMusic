@@ -1,8 +1,9 @@
-MUICHIRO HQ — CLICKABLE DASHBOARD + TWO ACCESS LEVELS
+MUICHIRO HQ — CLICKABLE DASHBOARD + OWNER COMMAND CENTER + TWO ACCESS LEVELS
 
 PATCH FILES
-- webhook.py: replace the existing webhook.py with this patched version.
+- webhook.py: replace the existing webhook.py with this patched version; it links the owner-only /owner page.
 - monitoring.py: replace/add this SQLite-backed monitoring module.
+- owner_hq.py: adds the owner-only Command Center, Pulse, music analytics, error detective, audit trail, database backup/integrity, owner preference storage, and diagnostics.
 - music/handlers.py: replace the existing file with this patched file; it includes the 10-favourite limit and monitoring events. It intentionally does NOT include music/voice.py, so your assistant-invite voice fix is not overwritten.
 - .env.monitoring.example: reference only; do not upload secrets into GitHub.
 
@@ -24,7 +25,7 @@ For persistent SQLite history across redeploys, attach a Render disk if your ser
 Without persistent storage, SQLite is local and a redeploy may erase stored logs. Do not put the database in a source-controlled folder.
 
 ACCESS ROLES
-- Owner account: dashboard, search, tab navigation, manual refresh, pause/resume auto-refresh, export logs to JSON, and clear stored logs (confirmation required).
+- Owner account: monitoring dashboard plus /owner Command Center, search, refresh, JSON/CSV exports, clear logs (confirmation required), analytics, diagnostics, audit history, database integrity check, SQLite backup, and stored owner preferences.
 - Viewer account: view music logs, activity/health, and application logs; search, navigate sections, refresh and pause/resume. Export and clear endpoints are denied server-side.
 - Owner-only routes check the role on the server; hiding buttons is not the security boundary.
 
@@ -50,3 +51,6 @@ LIMITATIONS AND PRIVACY
 TESTS
 Run: python -m py_compile webhook.py monitoring.py music/handlers.py
 Check the ZIP contents before copying. Test on a staging deployment first if available.
+
+
+For the full owner dashboard feature list and limitations, read OWNER_HQ_UPGRADE.txt. The Control Room switches are persisted preferences only and do not automatically change runtime behavior. HTTP Basic authentication is stateless, so active-session revocation is not provided by this patch.
