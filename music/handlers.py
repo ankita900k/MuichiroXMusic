@@ -310,11 +310,11 @@ async def _prepare_track(track: Track):
 
 
 async def _ensure_assistant_in_group(bot, chat_id: int):
-    """Ensure the music assistant joined, or deliver a manual-join invite.
+    """Reliably ensure assistant membership using fresh, short-lived invites.
 
-    Automatic attempts always use fresh invites. If they fail, a separate
-    longer-lived invite is sent to the assistant account's Saved Messages and
-    deliberately is NOT revoked, so the owner can open it from that account.
+    A per-chat lock prevents parallel /play requests from creating competing
+    invite links. Each retry creates a new link because a previous one may have
+    expired, been revoked, or been consumed by a concurrent join.
     """
     voice = runtime.voice
     if voice is None:
@@ -322,6 +322,7 @@ async def _ensure_assistant_in_group(bot, chat_id: int):
 
     lock = _assistant_join_locks.setdefault(int(chat_id), asyncio.Lock())
     async with lock:
+        # Fast path: don't create an invite if the assistant is already present.
         try:
             member = await voice.client.get_chat_member(chat_id, "me")
             status = str(getattr(member, "status", "")).lower()
@@ -335,15 +336,14 @@ async def _ensure_assistant_in_group(bot, chat_id: int):
         for attempt in range(3):
             invite = None
             try:
-                # A newly-created link on every outer attempt avoids reusing a
-                # Telegram invite that has expired, been revoked, or consumed.
                 invite = await bot.create_chat_invite_link(
                     chat_id=chat_id,
                     name="Muichiro assistant auto-join",
-                    expire_date=datetime.now(timezone.utc) + timedelta(minutes=10),
+                    expire_date=datetime.now(timezone.utc) + timedelta(minutes=5),
                     member_limit=1,
                 )
                 await voice.ensure_joined(chat_id, invite.invite_link)
+                # Ensure PyTgCalls can resolve the peer before playback starts.
                 await voice._ensure_peer_cached(chat_id)
                 log.info("Assistant is ready for voice playback in %s", chat_id)
                 return
@@ -354,75 +354,27 @@ async def _ensure_assistant_in_group(bot, chat_id: int):
                     "Assistant auto-join attempt %s/3 failed for chat %s: %s: %s",
                     attempt + 1, chat_id, type(exc).__name__, exc,
                 )
+                # Don't spin on permissions, bans, or a group that disallows joins.
                 permanent = any(term in message for term in (
                     "chat_admin_required", "not enough rights", "administrator rights",
                     "user_banned_in_channel", "kicked", "banned", "invite users",
-                    "bot is not a member", "chat not found", "peer_id_invalid",
+                    "bot is not a member", "chat not found", "peer_id_invalid"
                 ))
                 if permanent or attempt == 2:
                     break
                 await asyncio.sleep(0.7 * (2 ** attempt))
             finally:
-                # Auto-join links are disposable. Manual fallback is generated
-                # separately below and must remain valid until the user uses it.
                 if invite is not None:
                     try:
                         await bot.revoke_chat_invite_link(chat_id, invite.invite_link)
                     except Exception as revoke_exc:
                         log.debug("Temporary invite cleanup failed for %s: %s", chat_id, revoke_exc)
 
-        # Auto-join failed. Generate a distinct link and deliver it to the
-        # assistant account's Saved Messages, which is accessible from that
-        # account for the user to tap and join manually.
-        manual_link = None
-        delivery_error = None
-        try:
-            manual_invite = await bot.create_chat_invite_link(
-                chat_id=chat_id,
-                name="Muichiro assistant manual join",
-                expire_date=datetime.now(timezone.utc) + timedelta(hours=24),
-                member_limit=1,
-            )
-            manual_link = manual_invite.invite_link
-            try:
-                chat = await bot.get_chat(chat_id)
-                group_name = getattr(chat, "title", None) or str(chat_id)
-            except Exception:
-                group_name = str(chat_id)
-            try:
-                await voice.client.send_message(
-                    "me",
-                    "🎧 Muichiro assistant manual join required\n\n"
-                    f"Group: {group_name}\n"
-                    f"Chat ID: {chat_id}\n\n"
-                    "Automatic joining failed. Open this message in the assistant account "
-                    "and tap the invite link below to join manually. After joining, retry /play.\n\n"
-                    f"Invite link (valid for about 24 hours): {manual_link}",
-                    disable_web_page_preview=True,
-                )
-                log.warning("Manual assistant invite for %s sent to assistant Saved Messages", chat_id)
-            except Exception as send_exc:
-                delivery_error = send_exc
-                log.exception("Could not deliver manual join invite to assistant Saved Messages")
-        except Exception as invite_exc:
-            delivery_error = invite_exc
-            log.exception("Could not create manual assistant invite for %s", chat_id)
-
-        if manual_link:
-            raise RuntimeError(
-                "Muichiro could not auto-join this group. A fresh manual invite link was sent "
-                "to the assistant account's Saved Messages and will remain valid for about 24 hours. "
-                "Open Saved Messages in the assistant account, tap the link to join the group, "
-                "then retry /play. "
-                f"Auto-join error: {type(last_error).__name__}: {last_error}"
-                + (f". Link delivery failed: {delivery_error}" if delivery_error else "")
-            ) from last_error
-
         raise RuntimeError(
-            "Muichiro could not auto-join this group, and it could not create/deliver a manual invite. "
-            "Check that the bot has permission to invite users and that the assistant is not banned. "
-            f"Auto-join error: {type(last_error).__name__}: {last_error}. "
-            f"Invite/delivery error: {delivery_error}"
+            "Muichiro could not confirm that the music assistant is ready to join this group. "
+            "Check the bot's invite-users permission, whether the assistant is banned, and whether "
+            "the group allows the assistant account to join. "
+            f"Last error: {type(last_error).__name__}: {last_error}"
         ) from last_error
 
 
