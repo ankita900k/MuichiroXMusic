@@ -1,0 +1,56 @@
+MUICHIRO HQ — CLICKABLE DASHBOARD + OWNER COMMAND CENTER + TWO ACCESS LEVELS
+
+PATCH FILES
+- webhook.py: replace the existing webhook.py with this patched version; it links the owner-only /owner page.
+- monitoring.py: replace/add this SQLite-backed monitoring module.
+- owner_hq.py: adds the owner-only Command Center, Pulse, music analytics, error detective, audit trail, database backup/integrity, owner preference storage, and diagnostics.
+- music/handlers.py: replace the existing file with this patched file; it includes the 10-favourite limit and monitoring events. It intentionally does NOT include music/voice.py, so your assistant-invite voice fix is not overwritten.
+- .env.monitoring.example: reference only; do not upload secrets into GitHub.
+
+RENDER ENVIRONMENT VARIABLES
+Required owner login:
+  MONITOR_OWNER_USERNAME = your private owner username
+  MONITOR_OWNER_PASSWORD = a long, unique password
+
+Optional read-only admin login:
+  MONITOR_VIEWER_USERNAME = a different username
+  MONITOR_VIEWER_PASSWORD = a different long, unique password
+
+Optional database settings:
+  MONITOR_DB_PATH = monitor_logs.sqlite3
+  MONITOR_MAX_ENTRIES = 2000
+
+For persistent SQLite history across redeploys, attach a Render disk if your service/plan supports it, mount it at /var/data, and set:
+  MONITOR_DB_PATH = /var/data/muichiro_monitor.sqlite3
+Without persistent storage, SQLite is local and a redeploy may erase stored logs. Do not put the database in a source-controlled folder.
+
+ACCESS ROLES
+- Owner account: monitoring dashboard plus /owner Command Center, search, refresh, JSON/CSV exports, clear logs (confirmation required), analytics, diagnostics, audit history, database integrity check, SQLite backup, and stored owner preferences.
+- Viewer account: view music logs, activity/health, and application logs; search, navigate sections, refresh and pause/resume. Export and clear endpoints are denied server-side.
+- Owner-only routes check the role on the server; hiding buttons is not the security boundary.
+
+INSTALL
+1. Back up current webhook.py and music/handlers.py.
+2. Copy the patch files into the matching paths in your project. Do not replace music/voice.py.
+3. Add the environment variables in Render Dashboard > your Web Service > Environment.
+4. Commit and push the changes; wait for the deployment to succeed.
+5. Open your existing Render service base URL in a browser and sign in using the owner or viewer account.
+
+WHAT THE DASHBOARD SHOWS
+1. Music Logs: playback/queue/audio events emitted by music handlers.
+2. Bot Activity & Health: Telegram update summaries, commands, users/chats metadata, startup and health status.
+3. Application Logs: captured Python logging plus stdout/stderr written after capture starts.
+
+LIMITATIONS AND PRIVACY
+- Render build/deploy/platform logs are not exposed automatically to the running app; use Render's own Logs page for those.
+- General activity logging records command names and operational metadata, not arbitrary private message text. Music logs can include song titles and user/chat IDs.
+- This patch does not add remote process restart or music-control buttons; those require separate guarded actions and careful integration.
+- SQLite uses a separate database file. It does not modify the bot's existing user/favourites database.
+- Do not expose the dashboard without strong passwords. Use HTTPS (Render's public URL) and never commit credentials or database files.
+
+TESTS
+Run: python -m py_compile webhook.py monitoring.py music/handlers.py
+Check the ZIP contents before copying. Test on a staging deployment first if available.
+
+
+For the full owner dashboard feature list and limitations, read OWNER_HQ_UPGRADE.txt. The Control Room switches are persisted preferences only and do not automatically change runtime behavior. HTTP Basic authentication is stateless, so active-session revocation is not provided by this patch.
