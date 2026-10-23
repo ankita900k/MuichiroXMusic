@@ -24,6 +24,7 @@ from welcome import *
 from groq import Groq
 from groq import AsyncGroq
 from demonslayer_hunt import *
+from demon_hunt_rpg import setup_rpg_database, rpg_command_handlers, start_rpg_raid_watchers
 from tic_tac_toe import (ttt_command, ttt_callback)
 from rock_paper_scissors import (rps_command, rps_callback, end_rps_command)
 from uno import (uno_command, uno_callback, enduno_command)
@@ -304,6 +305,13 @@ async def button_callback(
             ],
             [
                 InlineKeyboardButton(
+                    " ⚔️ 𝐃𝐞𝐦𝐨𝐧 𝐇𝐮𝐧𝐭 𝐑𝐏𝐆",
+                    callback_data="help_rpg",
+                    style="primary"
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     " ⬅️ 𝐁𝐚𝐜𝐤",
                     callback_data="main_menu",
                     style="danger"
@@ -327,6 +335,9 @@ async def button_callback(
 
 🎵 <b>𝐌𝐮𝐬𝐢𝐜</b>
 <i>Play • Queue • Player • Voice Chat</i>
+
+⚔️ <b>𝐃𝐞𝐦𝐨𝐧 𝐇𝐮𝐧𝐭 𝐑𝐏𝐆</b>
+<i>Group raids • Breathing styles • Slayer progression</i>
 
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -482,6 +493,81 @@ async def button_callback(
 
 🎵 <i>Fast, clean and built for voice chat.</i>
 """,
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+
+    # ========================================================
+    # DEMON HUNT RPG
+    # ========================================================
+
+    if data == "help_rpg":
+        keyboard = [
+            [InlineKeyboardButton("⚔️ Launch / Status", callback_data="help_rpg_raid", style="primary")],
+            [InlineKeyboardButton("🌬️ Styles / Profile", callback_data="help_rpg_player", style="primary")],
+            [InlineKeyboardButton("🛒 Store / Inventory", callback_data="help_rpg_store", style="primary")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="help_menu", style="danger")],
+        ]
+        await query.edit_message_caption(
+            caption=(
+                "⚔️ <b>DEMON HUNT RPG</b>\n"
+                "Group raids, private breathing-style combat controls, EXP, Corps ranks, a separate RPG store, and legendary paths.\n\n"
+                "<code>/launchhunt normal</code> — Group admins launch a raid\n"
+                "<code>/raidstatus</code> — Current raid status\n"
+                "<code>/breathing</code> — Choose/view your style\n"
+                "<code>/rpgprofile</code> — Your RPG profile\n"
+                "<code>/rpghelp</code> — Full RPG command list"
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return
+
+    if data == "help_rpg_raid":
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="help_rpg", style="danger")]]
+        await query.edit_message_caption(
+            caption=(
+                "⚔️ <b>GROUP RAIDS</b>\n\n"
+                "<code>/launchhunt easy</code> — Rui\n"
+                "<code>/launchhunt normal</code> — Enmu\n"
+                "<code>/launchhunt hard</code> — Akaza\n"
+                "<code>/launchhunt upper</code> — Doma\n"
+                "<code>/launchhunt final</code> — Muzan\n"
+                "<code>/raidstatus</code> — View raid HP and timer\n\n"
+                "Only group admins can launch a raid. Players tap Join Raid to receive their own private battle panel."
+            ),
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data == "help_rpg_player":
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="help_rpg", style="danger")]]
+        await query.edit_message_caption(
+            caption=(
+                "🌬️ <b>SLAYER PROGRESSION</b>\n\n"
+                "<code>/breathing</code> — Choose your starting style\n"
+                "<code>/rpgprofile</code> — EXP, rank, RPG coins, defeats\n"
+                "<code>/rpgtrain mist</code> — Train/unlock another standard style\n"
+                "<code>/legendary sun</code> or <code>/legendary moon</code> — Legendary path progress\n"
+                "<code>/rpgleaderboard</code> — Top RPG Slayers\n\n"
+                "Your initial standard style is free. One free correction is available."
+            ),
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    if data == "help_rpg_store":
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="help_rpg", style="danger")]]
+        await query.edit_message_caption(
+            caption=(
+                "🛒 <b>RPG STORE</b>\n\n"
+                "<code>/rpgstore</code> — Browse RPG items\n"
+                "<code>/rpgbuy potion</code> — Buy an item\n"
+                "<code>/rpginventory</code> — View RPG inventory\n"
+                "<code>/rpguse potion</code> — Use a potion\n\n"
+                "RPG coins are completely separate from legacy Slayer Points."
+            ),
             parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -1941,6 +2027,13 @@ async def help_command(
             InlineKeyboardButton(
                 " 📖 𝐅𝐮𝐥𝐥 𝐆𝐮𝐢𝐝𝐞",
                 url="https://t.me/MuichiroUpdates/24",
+                style="primary"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                " ⚔️ 𝐃𝐞𝐦𝐨𝐧 𝐇𝐮𝐧𝐭 𝐑𝐏𝐆",
+                callback_data="help_rpg",
                 style="primary"
             )
         ]
@@ -4887,7 +4980,7 @@ def clean_math_text(text):
 
         "\\leq": "≤",
         "\\geq": "≥",
-        "\\neq": "≠",
+        "\neq": "≠",
 
         "\\pm": "±",
         "\\infty": "∞",
@@ -7539,7 +7632,14 @@ creset_handler = CommandHandler(
 )
 
 async def post_init(application):
-    """Register a polished Telegram command menu after the application starts."""
+    """Register Telegram commands and initialize the separate RPG tables."""
+    try:
+        setup_rpg_database()
+        print("Demon Hunt RPG database ready ✅")
+    except Exception as exc:
+        # Preserve the existing bot startup path if the RPG DB has a problem.
+        print(f"Demon Hunt RPG database initialization failed: {exc}")
+
     commands = [
         BotCommand("start", "Open Muichiro's main menu"),
         BotCommand("help", "Open help & commands"),
@@ -7555,6 +7655,18 @@ async def post_init(application):
         BotCommand("personality", "Choose my personality"),
         BotCommand("mood", "Choose my mood"),
         BotCommand("creset", "Reset AI chat history"),
+        BotCommand("launchhunt", "Launch a group Demon Hunt RPG raid"),
+        BotCommand("raidstatus", "View active RPG raid status"),
+        BotCommand("breathing", "Choose your breathing style"),
+        BotCommand("rpgprofile", "View your Slayer RPG profile"),
+        BotCommand("rpgstore", "Browse RPG items"),
+        BotCommand("rpginventory", "View RPG inventory"),
+        BotCommand("rpgbuy", "Buy an RPG store item"),
+        BotCommand("rpguse", "Use an RPG consumable"),
+        BotCommand("rpgtrain", "Train another breathing style"),
+        BotCommand("legendary", "Track Sun or Moon Breathing"),
+        BotCommand("rpgleaderboard", "View RPG Slayer rankings"),
+        BotCommand("rpghelp", "Demon Hunt RPG commands"),
     ]
 
     try:
@@ -7731,6 +7843,10 @@ def main():
     app.add_handler(CommandHandler("inventory", inventory_command))
     app.add_handler(CommandHandler("equipbadge", equip_badge_command))
     app.add_handler(CommandHandler("profile", profile_command))
+
+    # Isolated RPG handlers; legacy mystery-hunt handlers remain untouched.
+    for rpg_handler in rpg_command_handlers():
+        app.add_handler(rpg_handler)
 
     app.add_handler(
         CallbackQueryHandler(
