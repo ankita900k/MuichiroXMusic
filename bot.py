@@ -24,7 +24,6 @@ from welcome import *
 from groq import Groq
 from groq import AsyncGroq
 from demonslayer_hunt import *
-from demon_hunt_rpg import setup_rpg_database, rpg_command_handlers, start_rpg_raid_watchers
 from tic_tac_toe import (ttt_command, ttt_callback)
 from rock_paper_scissors import (rps_command, rps_callback, end_rps_command)
 from uno import (uno_command, uno_callback, enduno_command)
@@ -305,13 +304,6 @@ async def button_callback(
             ],
             [
                 InlineKeyboardButton(
-                    " ⚔️ 𝐃𝐞𝐦𝐨𝐧 𝐇𝐮𝐧𝐭 𝐑𝐏𝐆",
-                    callback_data="help_rpg",
-                    style="primary"
-                )
-            ],
-            [
-                InlineKeyboardButton(
                     " ⬅️ 𝐁𝐚𝐜𝐤",
                     callback_data="main_menu",
                     style="danger"
@@ -335,9 +327,6 @@ async def button_callback(
 
 🎵 <b>𝐌𝐮𝐬𝐢𝐜</b>
 <i>Play • Queue • Player • Voice Chat</i>
-
-⚔️ <b>𝐃𝐞𝐦𝐨𝐧 𝐇𝐮𝐧𝐭 𝐑𝐏𝐆</b>
-<i>Group raids • Breathing styles • Slayer progression</i>
 
 ━━━━━━━━━━━━━━━━━━━━
 
@@ -493,81 +482,6 @@ async def button_callback(
 
 🎵 <i>Fast, clean and built for voice chat.</i>
 """,
-            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-
-    # ========================================================
-    # DEMON HUNT RPG
-    # ========================================================
-
-    if data == "help_rpg":
-        keyboard = [
-            [InlineKeyboardButton("⚔️ Launch / Status", callback_data="help_rpg_raid", style="primary")],
-            [InlineKeyboardButton("🌬️ Styles / Profile", callback_data="help_rpg_player", style="primary")],
-            [InlineKeyboardButton("🛒 Store / Inventory", callback_data="help_rpg_store", style="primary")],
-            [InlineKeyboardButton("⬅️ Back", callback_data="help_menu", style="danger")],
-        ]
-        await query.edit_message_caption(
-            caption=(
-                "⚔️ <b>DEMON HUNT RPG</b>\n"
-                "Group raids, private breathing-style combat controls, EXP, Corps ranks, a separate RPG store, and legendary paths.\n\n"
-                "<code>/launchhunt normal</code> — Group admins launch a raid\n"
-                "<code>/raidstatus</code> — Current raid status\n"
-                "<code>/breathing</code> — Choose/view your style\n"
-                "<code>/rpgprofile</code> — Your RPG profile\n"
-                "<code>/rpghelp</code> — Full RPG command list"
-            ),
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-        return
-
-    if data == "help_rpg_raid":
-        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="help_rpg", style="danger")]]
-        await query.edit_message_caption(
-            caption=(
-                "⚔️ <b>GROUP RAIDS</b>\n\n"
-                "<code>/launchhunt easy</code> — Rui\n"
-                "<code>/launchhunt normal</code> — Enmu\n"
-                "<code>/launchhunt hard</code> — Akaza\n"
-                "<code>/launchhunt upper</code> — Doma\n"
-                "<code>/launchhunt final</code> — Muzan\n"
-                "<code>/raidstatus</code> — View raid HP and timer\n\n"
-                "Only group admins can launch a raid. Players tap Join Raid to receive their own private battle panel."
-            ),
-            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-    if data == "help_rpg_player":
-        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="help_rpg", style="danger")]]
-        await query.edit_message_caption(
-            caption=(
-                "🌬️ <b>SLAYER PROGRESSION</b>\n\n"
-                "<code>/breathing</code> — Choose your starting style\n"
-                "<code>/rpgprofile</code> — EXP, rank, RPG coins, defeats\n"
-                "<code>/rpgtrain mist</code> — Train/unlock another standard style\n"
-                "<code>/legendary sun</code> or <code>/legendary moon</code> — Legendary path progress\n"
-                "<code>/rpgleaderboard</code> — Top RPG Slayers\n\n"
-                "Your initial standard style is free. One free correction is available."
-            ),
-            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-    if data == "help_rpg_store":
-        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="help_rpg", style="danger")]]
-        await query.edit_message_caption(
-            caption=(
-                "🛒 <b>RPG STORE</b>\n\n"
-                "<code>/rpgstore</code> — Browse RPG items\n"
-                "<code>/rpgbuy potion</code> — Buy an item\n"
-                "<code>/rpginventory</code> — View RPG inventory\n"
-                "<code>/rpguse potion</code> — Use a potion\n\n"
-                "RPG coins are completely separate from legacy Slayer Points."
-            ),
             parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -2029,13 +1943,6 @@ async def help_command(
                 url="https://t.me/MuichiroUpdates/24",
                 style="primary"
             )
-        ],
-        [
-            InlineKeyboardButton(
-                " ⚔️ 𝐃𝐞𝐦𝐨𝐧 𝐇𝐮𝐧𝐭 𝐑𝐏𝐆",
-                callback_data="help_rpg",
-                style="primary"
-            )
         ]
     ]
 
@@ -2099,147 +2006,194 @@ async def weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _resolve_moderation_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resolve a target from a replied message, numeric Telegram ID, or @username.
+
+    Telegram Bot API cannot resolve every ordinary user's @username directly;
+    the configured Pyrogram assistant session is used as a best-effort resolver.
+    """
+    message = update.effective_message
+    if message and message.reply_to_message and message.reply_to_message.from_user:
+        return message.reply_to_message.from_user, context.args[:]
+
+    if not context.args:
+        return None, []
+
+    raw = context.args[0].strip()
+    remaining = context.args[1:]
+    if raw.lstrip('-').isdigit():
+        user_id = int(raw)
+        try:
+            member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
+            return member.user, remaining
+        except Exception:
+            # A banned user may no longer be a member; retain an ID-only target.
+            from telegram import User
+            return User(id=user_id, first_name=f"User {user_id}", is_bot=False), remaining
+
+    username = raw.lstrip('@')
+    if not username:
+        return None, []
+    try:
+        if not pyrogram_client.is_connected:
+            await pyrogram_client.start()
+        resolved = await pyrogram_client.get_users(username)
+        from telegram import User
+        return User(
+            id=int(resolved.id),
+            first_name=(getattr(resolved, 'first_name', None) or username),
+            last_name=getattr(resolved, 'last_name', None),
+            username=getattr(resolved, 'username', None),
+            is_bot=bool(getattr(resolved, 'is_bot', False)),
+        ), remaining
+    except Exception:
+        return None, remaining
+
+
+async def _moderation_admin_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    actor = update.effective_user
+    if not chat or chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP) or not actor:
+        await update.effective_message.reply_text("❌ This command only works in groups.")
+        return False
+    try:
+        member = await context.bot.get_chat_member(chat.id, actor.id)
+        if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+            await update.effective_message.reply_text("❌ Only group admins can use this command.")
+            return False
+        return True
+    except Exception:
+        await update.effective_message.reply_text("❌ I couldn't verify your admin permissions.")
+        return False
+
+
+def _target_mention(target) -> str:
+    name = html.escape(getattr(target, 'full_name', None) or getattr(target, 'first_name', None) or str(target.id))
+    return f'<a href="tg://user?id={target.id}">{name}</a>'
+
+
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only work in groups
-    if update.effective_chat.type == "private":
-        await update.message.reply_text("This command only works in groups.")
+    if not await _moderation_admin_check(update, context):
         return
-
-    # Check if sender is an admin
-    user = await context.bot.get_chat_member(
-        update.effective_chat.id,
-        update.effective_user.id
-    )
-
-    if user.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-        await update.message.reply_text("❌ Only admins can use this command.")
-        return
-
-    # Command must be used as a reply
-    if not update.message.reply_to_message:
-        await update.message.reply_text(
-            "Reply to a user's message with /ban"
+    target, extra = await _resolve_moderation_target(update, context)
+    if not target:
+        await update.effective_message.reply_text(
+            "Usage: reply /ban, /ban @username, or /ban USER_ID"
         )
         return
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, target.id)
+        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+            await update.effective_message.reply_text("❌ I can't ban a group admin.")
+            return
+        await context.bot.ban_chat_member(update.effective_chat.id, target.id)
+        reason = " ".join(extra).strip()
+        suffix = f"\nReason: {html.escape(reason)}" if reason else ""
+        await update.effective_message.reply_text(
+            f"🔨 {_target_mention(target)} has been banned.{suffix}",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        await update.effective_message.reply_text(f"❌ Ban failed: {html.escape(str(exc))}")
 
-    target = update.message.reply_to_message.from_user
 
-    # Prevent banning admins
-    target_member = await context.bot.get_chat_member(
-        update.effective_chat.id,
-        target.id
-    )
-
-    if target_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-        await update.message.reply_text("❌ I can't ban an admin.")
-        return
-
-    # Ban the user
-    await context.bot.ban_chat_member(
-        chat_id=update.effective_chat.id,
-        user_id=target.id
-    )
-
-    await update.message.reply_text(
-        f"🔨 {target.mention_html()} has been banned.",
-        parse_mode="HTML"
-    )
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type == "private":
-        await update.message.reply_text("This command only works in groups.")
+    if not await _moderation_admin_check(update, context):
         return
-
-    # Check if sender is admin
-    admin = await context.bot.get_chat_member(
-        update.effective_chat.id,
-        update.effective_user.id
-    )
-
-    if admin.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-        await update.message.reply_text("❌ Only admins can use this command.")
+    target, extra = await _resolve_moderation_target(update, context)
+    if not target:
+        await update.effective_message.reply_text(
+            "Usage: reply /mute, /mute @username [10m], or /mute USER_ID [10m]"
+        )
         return
-
-    # Must reply to a user's message
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Reply to a user's message with /mute")
-        return
-
-    target = update.message.reply_to_message.from_user
-
-    # Don't mute admins
-    member = await context.bot.get_chat_member(
-        update.effective_chat.id,
-        target.id
-    )
-
-    if member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-        await update.message.reply_text("❌ I can't mute an admin.")
-        return
-
-    permissions = ChatPermissions(
-        can_send_messages=False
-    )
-
-    await context.bot.restrict_chat_member(
-        chat_id=update.effective_chat.id,
-        user_id=target.id,
-        permissions=permissions
-    )
-
-    await update.message.reply_text(
-        f"🔇 {target.mention_html()} has been muted.",
-        parse_mode="HTML"
-    )
-    
+    try:
+        member = await context.bot.get_chat_member(update.effective_chat.id, target.id)
+        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+            await update.effective_message.reply_text("❌ I can't mute a group admin.")
+            return
+        duration = None
+        if extra and re.fullmatch(r"\d+[smhd]", extra[0].lower()):
+            amount = int(extra.pop(0)[:-1])
+            unit = extra[0][-1].lower() if False else None
+            token = context.args[1].lower() if context.args and not (update.effective_message.reply_to_message) else (context.args[0].lower() if context.args else '')
+            unit = token[-1] if token else 'm'
+            seconds = amount * {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}[unit]
+            duration = datetime.now() + timedelta(seconds=seconds)
+        await context.bot.restrict_chat_member(
+            chat_id=update.effective_chat.id,
+            user_id=target.id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=duration,
+        )
+        reason = " ".join(extra).strip()
+        suffix = f"\nReason: {html.escape(reason)}" if reason else ""
+        await update.effective_message.reply_text(
+            f"🔇 {_target_mention(target)} has been muted." + (f"\nDuration: {html.escape(token)}" if duration else "") + suffix,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        await update.effective_message.reply_text(f"❌ Mute failed: {html.escape(str(exc))}")
 
 
 mute_handler = CommandHandler("mute", mute)
 
+
 async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type == "private":
-        await update.message.reply_text("This command only works in groups.")
+    if not await _moderation_admin_check(update, context):
         return
-
-    # Check if sender is admin
-    admin = await context.bot.get_chat_member(
-        update.effective_chat.id,
-        update.effective_user.id
-    )
-
-    if admin.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-        await update.message.reply_text("❌ Only admins can use this command.")
+    target, _ = await _resolve_moderation_target(update, context)
+    if not target:
+        await update.effective_message.reply_text("Usage: reply /unmute, /unmute @username, or /unmute USER_ID")
         return
-
-    # Must reply to a user's message
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Reply to a user's message with /unmute")
-        return
-
-    target = update.message.reply_to_message.from_user
-
-    permissions = ChatPermissions(
-        can_send_messages=True,
-        can_send_polls=True,
-        can_send_other_messages=True,
-        can_add_web_page_previews=True,
-        can_change_info=False,
-        can_invite_users=True,
-        can_pin_messages=False
-    )
-
-    await context.bot.restrict_chat_member(
-        chat_id=update.effective_chat.id,
-        user_id=target.id,
-        permissions=permissions
-    )
-
-    await update.message.reply_text(
-        f"🔊 {target.mention_html()} has been unmuted.",
-        parse_mode="HTML"
-    )
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=update.effective_chat.id,
+            user_id=target.id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_audios=True,
+                can_send_documents=True,
+                can_send_photos=True,
+                can_send_videos=True,
+                can_send_video_notes=True,
+                can_send_voice_notes=True,
+                can_send_polls=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+            ),
+        )
+        await update.effective_message.reply_text(
+            f"🔊 {_target_mention(target)} has been unmuted.", parse_mode=ParseMode.HTML
+        )
+    except Exception as exc:
+        await update.effective_message.reply_text(f"❌ Unmute failed: {html.escape(str(exc))}")
 
 
 unmute_handler = CommandHandler("unmute", unmute)
+
+
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _moderation_admin_check(update, context):
+        return
+    target, _ = await _resolve_moderation_target(update, context)
+    if not target:
+        await update.effective_message.reply_text("Usage: /unban @username or /unban USER_ID")
+        return
+    try:
+        await context.bot.unban_chat_member(
+            chat_id=update.effective_chat.id,
+            user_id=target.id,
+            only_if_banned=True,
+        )
+        await update.effective_message.reply_text(
+            f"✅ {_target_mention(target)} has been unbanned.", parse_mode=ParseMode.HTML
+        )
+    except Exception as exc:
+        await update.effective_message.reply_text(f"❌ Unban failed: {html.escape(str(exc))}")
+
+
+unban_handler = CommandHandler("unban", unban)
+
 
 async def user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.reply_to_message:
@@ -2811,7 +2765,7 @@ async def tagall(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
 
                 participant = getattr(member, "user", None)
-                if not participant or getattr(participant, "is_deleted", False):
+                if not participant or getattr(participant, "is_deleted", False) or getattr(participant, "is_bot", False):
                     continue
 
                 participants[participant.id] = participant
@@ -2858,7 +2812,7 @@ async def tagall(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
 
                 await message.reply_text(
-                    f"{random.choice(TAG_MESSAGES)}\n\n" + "\n".join(mentions),
+                    f"{html.escape(' '.join(context.args).strip()) if context.args else random.choice(TAG_MESSAGES)}\n\n" + "\n".join(mentions),
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )
@@ -4980,7 +4934,7 @@ def clean_math_text(text):
 
         "\\leq": "≤",
         "\\geq": "≥",
-        "\neq": "≠",
+        "\\neq": "≠",
 
         "\\pm": "±",
         "\\infty": "∞",
@@ -7632,14 +7586,7 @@ creset_handler = CommandHandler(
 )
 
 async def post_init(application):
-    """Register Telegram commands and initialize the separate RPG tables."""
-    try:
-        setup_rpg_database()
-        print("Demon Hunt RPG database ready ✅")
-    except Exception as exc:
-        # Preserve the existing bot startup path if the RPG DB has a problem.
-        print(f"Demon Hunt RPG database initialization failed: {exc}")
-
+    """Register a polished Telegram command menu after the application starts."""
     commands = [
         BotCommand("start", "Open Muichiro's main menu"),
         BotCommand("help", "Open help & commands"),
@@ -7655,18 +7602,6 @@ async def post_init(application):
         BotCommand("personality", "Choose my personality"),
         BotCommand("mood", "Choose my mood"),
         BotCommand("creset", "Reset AI chat history"),
-        BotCommand("launchhunt", "Launch a group Demon Hunt RPG raid"),
-        BotCommand("raidstatus", "View active RPG raid status"),
-        BotCommand("breathing", "Choose your breathing style"),
-        BotCommand("rpgprofile", "View your Slayer RPG profile"),
-        BotCommand("rpgstore", "Browse RPG items"),
-        BotCommand("rpginventory", "View RPG inventory"),
-        BotCommand("rpgbuy", "Buy an RPG store item"),
-        BotCommand("rpguse", "Use an RPG consumable"),
-        BotCommand("rpgtrain", "Train another breathing style"),
-        BotCommand("legendary", "Track Sun or Moon Breathing"),
-        BotCommand("rpgleaderboard", "View RPG Slayer rankings"),
-        BotCommand("rpghelp", "Demon Hunt RPG commands"),
     ]
 
     try:
@@ -7843,10 +7778,6 @@ def main():
     app.add_handler(CommandHandler("inventory", inventory_command))
     app.add_handler(CommandHandler("equipbadge", equip_badge_command))
     app.add_handler(CommandHandler("profile", profile_command))
-
-    # Isolated RPG handlers; legacy mystery-hunt handlers remain untouched.
-    for rpg_handler in rpg_command_handlers():
-        app.add_handler(rpg_handler)
 
     app.add_handler(
         CallbackQueryHandler(

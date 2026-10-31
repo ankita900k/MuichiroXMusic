@@ -151,14 +151,8 @@ async def startup():
     # Initialize PTB
     await ptb_app.initialize()
 
-    # The service manages PTB's lifecycle manually instead of run_webhook(),
-    # so invoke post_init explicitly to initialize the RPG tables, restore
-    # active raid deadlines, and register Telegram's command menu.
-    await bot.post_init(ptb_app)
-
     # Start PTB update processing
     await ptb_app.start()
-    bot.start_rpg_raid_watchers(ptb_app)
 
     print("PTB application started ✅")
     monitoring.activity_event("Telegram update processing started.")
