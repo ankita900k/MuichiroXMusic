@@ -1,0 +1,68 @@
+MUICHIRO DATABASE CONNECTION UPDATE
+====================================
+
+Primary database
+-----------------
+The bot now reads NEON_DATABASE_URL first. DATABASE_URL and POSTGRES_URL remain
+legacy fallbacks. Configure NEON_DATABASE_URL in the Render service environment
+with the Neon PostgreSQL connection string (prefer the direct connection string
+for the bot). Keep the value private.
+
+Connection behaviour
+--------------------
+- Startup makes bounded connection attempts and fails clearly if Neon is not
+  configured or cannot be reached.
+- Transient PostgreSQL connection errors trigger reconnection attempts.
+- A failed SELECT can be retried once after reconnection.
+- Writes and commits are never blindly replayed because the server may have
+  committed them before the network connection was lost.
+- GET /health is a liveness check for Render.
+- GET /health/database checks the Neon connection and returns 200 or 503.
+
+Backup and emergency recovery boundary
+--------------------------------------
+The GitHub Actions Google Drive backup workflow is separate from the live bot.
+This code does NOT automatically restore a backup or switch to a stale snapshot.
+That is intentional: restoring an older dump over a recovered primary could erase
+newer bot activity. A backup is a recovery point, not a live replica.
+
+For a real disaster recovery, restore the selected encrypted dump into a separate
+Neon database/branch, verify its tables and important records, and only then
+change NEON_DATABASE_URL in Render. Do not overwrite the existing Neon database
+without first checking whether it contains newer data.
+
+Render steps
+------------
+1. Open the Muichiro Render Web Service -> Environment.
+2. Add NEON_DATABASE_URL with the Neon connection string. Do not paste it into
+   GitHub files, source code, screenshots, or chat.
+3. Keep DATABASE_URL temporarily as a rollback fallback if it is still configured.
+4. Deploy the updated project.
+5. Open /health/database on the service URL. A 200 response means the database
+   health check succeeded; 503 means Neon is currently unreachable.
+
+The bot's non-database endpoints can remain alive during a Neon outage, but
+database-dependent commands/features may fail until the primary connection is
+restored. This update does not promise zero data loss or continuous database
+service during an outage.
+
+
+Emergency event journal foundation
+-----------------------------------
+emergency_journal.py provides append_event(event_type, payload, event_id=None).
+It encrypts an explicitly supplied JSON event with AES-256-GCM (Scrypt-derived
+key) and uploads it to the separate GOOGLE_JOURNAL_FOLDER_ID in Drive. It only
+returns success after Drive confirms the upload. Reusing the same event_id checks
+for an existing file to reduce duplicate journal entries.
+
+IMPORTANT: this is a journal transport foundation, NOT automatic database failover
+or automatic replay. Existing SQL call sites have not yet been converted into
+idempotent domain events, and no replay handlers are enabled. Do not claim a
+critical change is protected by the journal until its caller explicitly records
+the event before acknowledging success and a matching replay handler has been
+implemented and tested. The /health/database response now reports whether the
+journal credentials/folder are configured; this does not test an actual upload.
+
+Render environment variables required for the journal:
+GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN,
+GOOGLE_JOURNAL_FOLDER_ID, BACKUP_ENCRYPTION_PASSPHRASE. Keep these private.

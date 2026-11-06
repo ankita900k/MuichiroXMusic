@@ -19,6 +19,10 @@ from dotenv import load_dotenv
 import os
 import html
 from telegram.error import BadRequest, Forbidden, RetryAfter
+
+# Load local environment before database.py reads NEON_DATABASE_URL.
+load_dotenv()
+
 from database import db, cursor
 from welcome import *
 from groq import Groq
@@ -34,9 +38,6 @@ from rpsbot import (rpsbot_command, endrpsbot_command, rpsbot_callback)
 from chessbot import (chessbot_command, chessbot_callback, endchessbot_command)
 from connect4bot import (connect4bot_command, connect4bot_callback, endconnect4bot_command)
 from music.handlers import get_handlers as get_music_handlers
-
-
-load_dotenv()
 
 
 tagall_running = {}
@@ -1969,13 +1970,36 @@ async def help_command(
         )
 
 async def id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    username = f"@{user.username}" if user.username else "N/A"
+    """Show the sender's ID, a replied user's ID, or a resolved username/ID."""
+    message = update.effective_message
+    if not message:
+        return
 
-    await update.message.reply_text(
-        f"👤 Name: {user.first_name}\n"
-        f"🆔 User ID: {user.id}\n"
-        f"📛 Username: {username}"
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target = message.reply_to_message.from_user
+    elif context.args:
+        target, _ = await _resolve_moderation_target(update, context)
+        if target is None:
+            await message.reply_text(
+                "❌ I couldn't resolve that user. Reply to their message, "
+                "or use /id @username or /id USER_ID."
+            )
+            return
+    else:
+        target = update.effective_user
+
+    if target is None:
+        await message.reply_text("❌ I couldn't identify that user.")
+        return
+
+    name = html.escape(getattr(target, "full_name", None) or getattr(target, "first_name", None) or str(target.id))
+    username = getattr(target, "username", None)
+    username_text = f"@{html.escape(username)}" if username else "Not set"
+    await message.reply_text(
+        f"👤 <b>Name:</b> {name}\n"
+        f"🆔 <b>User ID:</b> <code>{target.id}</code>\n"
+        f"📛 <b>Username:</b> {username_text}",
+        parse_mode=ParseMode.HTML,
     )
 
 async def weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2007,33 +2031,64 @@ async def weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _resolve_moderation_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Resolve a target from a replied message, numeric Telegram ID, or @username.
+    """Resolve a target from a reply, numeric ID, @username or Telegram link.
 
-    Telegram Bot API cannot resolve every ordinary user's @username directly;
-    the configured Pyrogram assistant session is used as a best-effort resolver.
+    Supports text-link entities (including tg://user?id=... HTML mentions),
+    t.me profile links, plain @usernames and numeric IDs. Username lookup uses
+    the configured Pyrogram assistant because the Bot API cannot resolve every
+    ordinary user's username directly.
     """
     message = update.effective_message
     if message and message.reply_to_message and message.reply_to_message.from_user:
-        return message.reply_to_message.from_user, context.args[:]
+        return message.reply_to_message.from_user, list(context.args or [])
 
-    if not context.args:
+    args = list(context.args or [])
+    if not args:
         return None, []
 
-    raw = context.args[0].strip()
-    remaining = context.args[1:]
-    if raw.lstrip('-').isdigit():
-        user_id = int(raw)
+    raw = args[0].strip()
+    remaining = args[1:]
+
+    # If the first argument is a Telegram text-link entity, use its actual URL
+    # rather than its visible label (e.g. "Lucifer" linking to a user profile).
+    if message:
+        for entity in (message.entities or []):
+            if getattr(entity, "type", None) == "text_link":
+                try:
+                    linked_text = message.parse_entity(entity).strip()
+                except Exception:
+                    linked_text = ""
+                if linked_text and (raw == linked_text or raw in linked_text):
+                    raw = getattr(entity, "url", None) or raw
+                    break
+
+    raw = html.unescape(raw).strip().strip("<>").strip()
+
+    # Accept literal HTML anchors as well as Telegram's tg:// user links.
+    tg_match = re.search(r"tg://user\?id=(-?\d+)", raw, flags=re.IGNORECASE)
+    if not tg_match:
+        tg_match = re.search(r"(?:user\?id=|[?&]id=)(-?\d+)", raw, flags=re.IGNORECASE)
+    if tg_match:
+        raw = tg_match.group(1)
+
+    if raw.lstrip("-").isdigit():
+        target_id = int(raw)
         try:
-            member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
+            member = await context.bot.get_chat_member(update.effective_chat.id, target_id)
             return member.user, remaining
         except Exception:
-            # A banned user may no longer be a member; retain an ID-only target.
             from telegram import User
-            return User(id=user_id, first_name=f"User {user_id}", is_bot=False), remaining
+            return User(id=target_id, first_name=f"User {target_id}", is_bot=False), remaining
 
-    username = raw.lstrip('@')
+    # Normalize public Telegram profile URLs to a username.
+    link_match = re.search(r"(?:https?://)?(?:www\.)?t\.me/([A-Za-z0-9_]{5,})", raw, flags=re.IGNORECASE)
+    if link_match:
+        raw = link_match.group(1)
+    username = raw.lstrip("@").strip()
+    username = re.sub(r"[^A-Za-z0-9_]", "", username)
     if not username:
-        return None, []
+        return None, remaining
+
     try:
         if not pyrogram_client.is_connected:
             await pyrogram_client.start()
@@ -2041,12 +2096,13 @@ async def _resolve_moderation_target(update: Update, context: ContextTypes.DEFAU
         from telegram import User
         return User(
             id=int(resolved.id),
-            first_name=(getattr(resolved, 'first_name', None) or username),
-            last_name=getattr(resolved, 'last_name', None),
-            username=getattr(resolved, 'username', None),
-            is_bot=bool(getattr(resolved, 'is_bot', False)),
+            first_name=(getattr(resolved, "first_name", None) or username),
+            last_name=getattr(resolved, "last_name", None),
+            username=getattr(resolved, "username", None),
+            is_bot=bool(getattr(resolved, "is_bot", False)),
         ), remaining
-    except Exception:
+    except Exception as exc:
+        print(f"⚠️ Could not resolve Telegram username {username!r}: {exc}")
         return None, remaining
 
 
@@ -2100,39 +2156,57 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _moderation_admin_check(update, context):
         return
+
     target, extra = await _resolve_moderation_target(update, context)
     if not target:
         await update.effective_message.reply_text(
-            "Usage: reply /mute, /mute @username [10m], or /mute USER_ID [10m]"
+            "Usage: reply /mute, /mute @username [10m], "
+            "/mute USER_ID [10m], or /mute t.me/username [10m]"
         )
         return
+
     try:
         member = await context.bot.get_chat_member(update.effective_chat.id, target.id)
         if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
             await update.effective_message.reply_text("❌ I can't mute a group admin.")
             return
+
         duration = None
+        duration_label = None
         if extra and re.fullmatch(r"\d+[smhd]", extra[0].lower()):
-            amount = int(extra.pop(0)[:-1])
-            unit = extra[0][-1].lower() if False else None
-            token = context.args[1].lower() if context.args and not (update.effective_message.reply_to_message) else (context.args[0].lower() if context.args else '')
-            unit = token[-1] if token else 'm'
-            seconds = amount * {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}[unit]
+            duration_label = extra.pop(0).lower()
+            amount = int(duration_label[:-1])
+            unit = duration_label[-1]
+            if amount <= 0:
+                await update.effective_message.reply_text("❌ Mute duration must be greater than zero.")
+                return
+            seconds = amount * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+            if seconds < 30 or seconds > 366 * 86400:
+                await update.effective_message.reply_text(
+                    "❌ Choose a mute duration between 30 seconds and 366 days."
+                )
+                return
             duration = datetime.now() + timedelta(seconds=seconds)
+
         await context.bot.restrict_chat_member(
             chat_id=update.effective_chat.id,
             user_id=target.id,
             permissions=ChatPermissions(can_send_messages=False),
             until_date=duration,
         )
+
         reason = " ".join(extra).strip()
-        suffix = f"\nReason: {html.escape(reason)}" if reason else ""
+        suffix = f"\nDuration: {html.escape(duration_label)}" if duration_label else ""
+        if reason:
+            suffix += f"\nReason: {html.escape(reason)}"
         await update.effective_message.reply_text(
-            f"🔇 {_target_mention(target)} has been muted." + (f"\nDuration: {html.escape(token)}" if duration else "") + suffix,
+            f"🔇 {_target_mention(target)} has been muted.{suffix}",
             parse_mode=ParseMode.HTML,
         )
     except Exception as exc:
-        await update.effective_message.reply_text(f"❌ Mute failed: {html.escape(str(exc))}")
+        await update.effective_message.reply_text(
+            f"❌ Mute failed: {html.escape(str(exc))}"
+        )
 
 
 mute_handler = CommandHandler("mute", mute)
@@ -2196,70 +2270,11 @@ unban_handler = CommandHandler("unban", unban)
 
 
 async def user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.reply_to_message:
-        user = update.message.reply_to_message.from_user
-
-        await update.message.reply_text(
-            f"👤 User: {user.full_name}\n"
-            f"🆔 User ID: `{user.id}`",
-            parse_mode="Markdown"
-        )
-    else:
-        user = update.effective_user
-
-        await update.message.reply_text(
-            f"👤 Your Name: {user.full_name}\n"
-            f"🆔 Your ID: `{user.id}`",
-            parse_mode="Markdown"
-        )
+    """Backward-compatible alias; /id and /userid share one implementation."""
+    await id(update, context)
 
 
-user_id_handler = CommandHandler("userId", user_id)
-
-async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only work in groups
-    if update.effective_chat.type == "private":
-        await update.message.reply_text("This command only works in groups.")
-        return
-
-    # Check if the user is an admin
-    member = await context.bot.get_chat_member(
-        update.effective_chat.id,
-        update.effective_user.id
-    )
-
-    if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
-        await update.message.reply_text("❌ Only admins can use this command.")
-        return
-
-    # Usage: /unban <user_id>
-    if len(context.args) != 1:
-        await update.message.reply_text(
-            "Usage:\n/unban <user_id>"
-        )
-        return
-
-    try:
-        user_id = int(context.args[0])
-
-        await context.bot.unban_chat_member(
-            chat_id=update.effective_chat.id,
-            user_id=user_id,
-            only_if_banned=True
-        )
-
-        await update.message.reply_text(
-            f"✅ User `{user_id}` has been unbanned.",
-            parse_mode="Markdown"
-        )
-
-    except ValueError:
-        await update.message.reply_text("❌ Invalid user ID.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-
-
-unban_handler = CommandHandler("unban", unban)
+user_id_handler = CommandHandler("userid", user_id)
 
 
 async def admins(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 import secrets
 import json
 from datetime import datetime, timezone
@@ -101,9 +104,30 @@ async def monitor_export(account: dict = Depends(require_monitor_auth)):
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "healthy"
-    }
+    # Liveness endpoint: keep Render's process check independent from a
+    # temporary Neon outage so Render does not restart-loop the bot.
+    return {"status": "alive"}
+
+
+@app.get("/health/database")
+async def database_health():
+    from database import health_check, get_status
+
+    healthy = health_check()
+    status = get_status()
+    from emergency_journal import get_status as get_journal_status
+    journal_status = get_journal_status()
+    # Keep internal connection errors private; this endpoint is public for
+    # operational health checks and must not expose connection details.
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "connected" if healthy else "degraded",
+            "backend": status.get("backend"),
+            "generation": status.get("generation"),
+            "emergency_journal_configured": journal_status.get("configured", False),
+        },
+    )
 
 
 @app.post("/telegram")
