@@ -333,21 +333,131 @@ async def _search_library(query: str) -> dict[str, Any]:
     }
 
 
+def _annie_payload_metadata(raw: Any) -> dict[str, Any]:
+    """Normalize metadata returned by Annie's optional JSON response."""
+    if not isinstance(raw, dict):
+        return {}
+
+    candidates = [raw]
+    for key in ("data", "result", "track", "metadata", "video"):
+        value = raw.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+
+    normalized: dict[str, Any] = {}
+    for item in candidates:
+        for key in (
+            "title", "name", "track_title", "artist", "artists",
+            "artist_name", "performer", "creator", "uploader",
+            "channel", "duration", "duration_seconds", "duration_ms",
+            "length", "album", "collection", "thumbnail",
+            "thumbnail_url", "cover", "cover_url", "artwork",
+            "artwork_url", "image",
+        ):
+            value = item.get(key)
+            if value not in (None, "", [], {}):
+                normalized.setdefault(key, value)
+        thumbs = item.get("thumbnails")
+        if isinstance(thumbs, list) and thumbs:
+            for thumb in reversed(thumbs):
+                if isinstance(thumb, dict) and thumb.get("url"):
+                    normalized.setdefault("thumbnail", thumb["url"])
+                    break
+    return normalized
+
+
+def _yt_dlp_metadata_sync(target: str) -> dict[str, Any]:
+    """Resolve public metadata only; Annie remains the audio download provider."""
+    try:
+        import yt_dlp
+    except ImportError:
+        log.warning("yt-dlp is not installed; Annie metadata enrichment is unavailable")
+        return {}
+
+    source = target if target.startswith(("http://", "https://")) else f"ytsearch1:{target}"
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "extract_flat": False,
+        "socket_timeout": 12,
+        "retries": 1,
+        "playlist_items": "1",
+    }
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(source, download=False)
+        if isinstance(info, dict) and isinstance(info.get("entries"), list):
+            info = next((entry for entry in info["entries"] if isinstance(entry, dict)), {})
+        if not isinstance(info, dict):
+            return {}
+
+        artist = (
+            info.get("artist") or info.get("artists") or info.get("creator")
+            or info.get("channel") or info.get("uploader")
+        )
+        if isinstance(artist, list):
+            artist = ", ".join(str(value) for value in artist if value)
+
+        thumbnail = info.get("thumbnail")
+        if not thumbnail:
+            thumbs = info.get("thumbnails") or []
+            if isinstance(thumbs, list):
+                valid = [item for item in thumbs if isinstance(item, dict) and item.get("url")]
+                if valid:
+                    thumbnail = valid[-1]["url"]
+
+        return {
+            "title": info.get("track") or info.get("title"),
+            "artist": artist,
+            "duration": info.get("duration"),
+            "album": info.get("album"),
+            "thumbnail": thumbnail,
+            "webpage_url": info.get("webpage_url") or info.get("original_url"),
+            "id": info.get("id"),
+        }
+    except Exception as exc:
+        log.info("Could not enrich Annie metadata with yt-dlp: %s", type(exc).__name__)
+        return {}
+
+
 async def _resolve_with_annie(target: str) -> dict[str, Any]:
-    """Download through Annie; its published API does not document a metadata/search endpoint."""
-    path = await annie.prepare_audio(target)
-    raw = getattr(annie, "last_metadata", {}) or {}
-    def pick(*keys):
-        for key in keys:
-            value = raw.get(key)
-            if value not in (None, ""):
-                return value
-        return None
-    title = str(pick("title", "name", "track_title") or target)
-    artist = str(pick("artist", "performer", "uploader") or "Unknown Artist")
-    duration = _duration_seconds(raw) if isinstance(raw, dict) else None
-    album = pick("album", "collection")
-    thumbnail = pick("thumbnail", "thumbnail_url", "cover", "cover_url")
+    """Download audio from Annie and enrich missing fields independently."""
+    # Run the independent metadata lookup alongside Annie's audio download so
+    # the enrichment does not add a second full network wait to playback startup.
+    path, yt_info = await asyncio.gather(
+        annie.prepare_audio(target),
+        asyncio.to_thread(_yt_dlp_metadata_sync, target),
+    )
+    raw = _annie_payload_metadata(getattr(annie, "last_metadata", {}) or {})
+
+    def first(*values):
+        return next((value for value in values if value not in (None, "", [], {})), None)
+
+    title = str(first(
+        raw.get("title"), raw.get("name"), raw.get("track_title"),
+        yt_info.get("title"), target,
+    ))
+    artist_value = first(
+        raw.get("artist"), raw.get("artists"), raw.get("artist_name"),
+        raw.get("performer"), raw.get("creator"), yt_info.get("artist"),
+        raw.get("channel"), raw.get("uploader"),
+    )
+    if isinstance(artist_value, list):
+        artist_value = ", ".join(str(value) for value in artist_value if value)
+    artist = str(artist_value or "Unknown Artist").strip()
+
+    duration = _duration_seconds(raw)
+    if not duration:
+        duration = _duration_seconds(yt_info)
+    album = first(raw.get("album"), raw.get("collection"), yt_info.get("album"))
+    thumbnail = first(
+        raw.get("thumbnail"), raw.get("thumbnail_url"), raw.get("cover"),
+        raw.get("cover_url"), raw.get("artwork"), raw.get("artwork_url"),
+        raw.get("image"), yt_info.get("thumbnail"),
+    )
+
     try:
         def probe():
             completed = subprocess.run(
@@ -360,20 +470,25 @@ async def _resolve_with_annie(target: str) -> dict[str, Any]:
         data = await asyncio.to_thread(probe)
         fmt = data.get("format") or {}
         try:
-            duration = max(1, int(float(fmt.get("duration") or 0)))
+            probed_duration = max(1, int(float(fmt.get("duration") or 0)))
+            duration = probed_duration or duration
         except (TypeError, ValueError):
-            duration = None
+            pass
         tags = {str(k).lower(): str(v) for k, v in (fmt.get("tags") or {}).items()}
         title = tags.get("title") or title
         artist = tags.get("artist") or tags.get("album_artist") or artist
-        album = tags.get("album")
+        album = tags.get("album") or album
     except Exception:
         log.debug("Annie media metadata probe unavailable", exc_info=True)
+
     return {
         "title": title, "artist": artist, "duration": duration,
         "album": album, "thumbnail": thumbnail, "media_path": path,
-        "provider": "annie", "webpage_url": target, "query": target,
-        "id": None, "isrc": None, "stream_url": None,
+        "provider": "annie",
+        "webpage_url": yt_info.get("webpage_url") or target,
+        "query": target,
+        "id": yt_info.get("id"),
+        "isrc": None, "stream_url": None,
     }
 
 
