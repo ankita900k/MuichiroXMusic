@@ -54,3 +54,5 @@ pyrogram>=2.0.106
 tgcrypto>=1.2
 py-tgcalls==2.2.0
 
+
+Pillow>=10.0

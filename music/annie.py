@@ -5,6 +5,16 @@ from urllib.parse import quote
 import aiohttp
 
 
+class AnnieAPIError(RuntimeError):
+    def __init__(self, status_code: int, retry_after: int | None = None):
+        self.status_code = int(status_code)
+        self.retry_after = retry_after
+        message = f"Annie API returned HTTP {self.status_code}"
+        if self.status_code == 429 and retry_after:
+            message += f"; retry after {retry_after} seconds"
+        super().__init__(message)
+
+
 class AnnieAPI:
     def __init__(self):
         self.base = os.getenv(
@@ -12,6 +22,7 @@ class AnnieAPI:
             "https://api.alonexraj.shop",
         ).rstrip("/")
         self.api_key = os.getenv("ANNIE_API_KEY", "").strip()
+        self.last_metadata = {}
 
     def _url(self, query: str, media_type: str = "audio"):
         if not self.api_key:
@@ -38,13 +49,20 @@ class AnnieAPI:
             async with session.get(
                 url, allow_redirects=True
             ) as response:
-                response.raise_for_status()
+                if response.status >= 400:
+                    retry = response.headers.get("Retry-After")
+                    try:
+                        retry = int(retry) if retry else None
+                    except (TypeError, ValueError):
+                        retry = None
+                    raise AnnieAPIError(response.status, retry)
                 content_type = (
                     response.headers.get("Content-Type") or ""
                 ).lower()
 
                 if "json" in content_type:
                     payload = await response.json(content_type=None)
+                    self.last_metadata = payload if isinstance(payload, dict) else {}
                     media_url = None
                     if isinstance(payload, dict):
                         for key in (
@@ -69,9 +87,16 @@ class AnnieAPI:
                     async with session.get(
                         media_url, allow_redirects=True
                     ) as media:
-                        media.raise_for_status()
+                        if media.status >= 400:
+                            retry = media.headers.get("Retry-After")
+                            try:
+                                retry = int(retry) if retry else None
+                            except (TypeError, ValueError):
+                                retry = None
+                            raise AnnieAPIError(media.status, retry)
                         return await self._save_response(media)
 
+                self.last_metadata = {}
                 return await self._save_response(response)
 
     async def _save_response(self, response):

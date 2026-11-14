@@ -11,6 +11,8 @@ from telegram.constants import ChatMemberStatus
 from telegram.ext import ContextTypes
 
 from database import db, cursor
+from music.artwork import make_welcome_card
+import os
 
 
 # ==========================================================
@@ -532,6 +534,16 @@ async def welcome_new_members(
         )
 
         welcome_text = welcome_text.replace(
+            "{userid}",
+            str(user.id)
+        )
+
+        welcome_text = welcome_text.replace(
+            "{user_id}",
+            str(user.id)
+        )
+
+        welcome_text = welcome_text.replace(
             "{group}",
             group_name
         )
@@ -540,6 +552,35 @@ async def welcome_new_members(
             "{count}",
             str(count)
         )
+
+        # ==================================================
+        # DEFAULT MUICHIRO WELCOME ARTWORK
+        # ==================================================
+
+        if not data or (not saved_file_id and not saved_text):
+            card_path = None
+            try:
+                card_path = make_welcome_card(
+                    user.full_name,
+                    user.username,
+                    user.id,
+                )
+                with open(card_path, "rb") as card:
+                    await context.bot.send_photo(
+                        chat_id=chat.id,
+                        photo=card,
+                        caption=f"🌫️ <b>Welcome to {group_name}!</b>",
+                        parse_mode="HTML",
+                        reply_markup=keyboard,
+                    )
+            finally:
+                if card_path:
+                    try:
+                        os.remove(card_path)
+                    except OSError:
+                        pass
+            print("✅ Muichiro welcome artwork sent!")
+            continue
 
         # ==================================================
         # SEND PHOTO

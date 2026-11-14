@@ -7605,6 +7605,7 @@ async def post_init(application):
     commands = [
         BotCommand("start", "Open Muichiro's main menu"),
         BotCommand("help", "Open help & commands"),
+        BotCommand("musicconnection", "Owner: change global music source"),
         BotCommand("play", "Play music in voice chat"),
         BotCommand("audio", "Get a song as audio"),
         BotCommand("pause", "Pause music"),

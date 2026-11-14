@@ -260,6 +260,19 @@ CREATE TABLE IF NOT EXISTS welcome_settings(
 """)
 
 cursor.execute("""
+CREATE TABLE IF NOT EXISTS music_provider_settings(
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    provider TEXT NOT NULL DEFAULT 'hep',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+cursor.execute("""
+INSERT INTO music_provider_settings (id, provider)
+VALUES (1, 'hep')
+ON CONFLICT (id) DO NOTHING
+""")
+
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS bot_users(
     user_id BIGINT PRIMARY KEY,
     username TEXT,

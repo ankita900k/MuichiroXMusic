@@ -19,6 +19,9 @@ from urllib.parse import unquote
 
 import aiohttp
 
+from .annie import annie
+from .provider_settings import get_music_provider
+
 log = logging.getLogger(__name__)
 
 HEP_BASE_URL = os.getenv("HEP_MUSIC_BASE_URL", "https://music.jakeypri.me").rstrip("/")
@@ -330,10 +333,57 @@ async def _search_library(query: str) -> dict[str, Any]:
     }
 
 
+async def _resolve_with_annie(target: str) -> dict[str, Any]:
+    """Download through Annie; its published API does not document a metadata/search endpoint."""
+    path = await annie.prepare_audio(target)
+    raw = getattr(annie, "last_metadata", {}) or {}
+    def pick(*keys):
+        for key in keys:
+            value = raw.get(key)
+            if value not in (None, ""):
+                return value
+        return None
+    title = str(pick("title", "name", "track_title") or target)
+    artist = str(pick("artist", "performer", "uploader") or "Unknown Artist")
+    duration = _duration_seconds(raw) if isinstance(raw, dict) else None
+    album = pick("album", "collection")
+    thumbnail = pick("thumbnail", "thumbnail_url", "cover", "cover_url")
+    try:
+        def probe():
+            completed = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json",
+                 "-show_format", "-show_streams", path],
+                capture_output=True, text=True, timeout=15, check=True,
+            )
+            import json
+            return json.loads(completed.stdout or "{}")
+        data = await asyncio.to_thread(probe)
+        fmt = data.get("format") or {}
+        try:
+            duration = max(1, int(float(fmt.get("duration") or 0)))
+        except (TypeError, ValueError):
+            duration = None
+        tags = {str(k).lower(): str(v) for k, v in (fmt.get("tags") or {}).items()}
+        title = tags.get("title") or title
+        artist = tags.get("artist") or tags.get("album_artist") or artist
+        album = tags.get("album")
+    except Exception:
+        log.debug("Annie media metadata probe unavailable", exc_info=True)
+    return {
+        "title": title, "artist": artist, "duration": duration,
+        "album": album, "thumbnail": thumbnail, "media_path": path,
+        "provider": "annie", "webpage_url": target, "query": target,
+        "id": None, "isrc": None, "stream_url": None,
+    }
+
+
 async def resolve(query: str) -> dict[str, Any]:
     target = query.strip()
     if not target:
         raise ValueError("Empty music query")
+    provider = get_music_provider()
+    if provider == "annie":
+        return await _resolve_with_annie(target)
     if target.startswith(("http://", "https://")):
         media = await _download_binary("/media", {"url": target, "format": "audio"}, "Requested track")
         return {
@@ -345,7 +395,6 @@ async def resolve(query: str) -> dict[str, Any]:
             "stream_url": None,
             "query": target,
         }
-    # Song-name searches resolve directly through Hep.gg's music library.
     return await _search_library(target)
 
 
@@ -355,6 +404,10 @@ async def download_audio(info: dict[str, Any]) -> str:
         return str(existing)
 
     provider = info.get("provider") or "hep_library"
+    if provider == "annie":
+        path = await annie.prepare_audio(str(info.get("query") or info.get("webpage_url") or ""))
+        info["media_path"] = path
+        return path
     if provider == "hep_media":
         url = info.get("webpage_url") or info.get("source_url") or info.get("query")
         if not url:

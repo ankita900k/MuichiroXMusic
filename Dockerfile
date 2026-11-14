@@ -5,6 +5,7 @@ RUN apt-get update \
         build-essential \
         ca-certificates \
         ffmpeg \
+        fonts-dejavu-core \
         stockfish \
     && rm -rf /var/lib/apt/lists/*
 

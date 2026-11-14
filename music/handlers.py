@@ -14,10 +14,13 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from . import runtime
 from .downloader import HepMusicError, cleanup_media, download_audio, resolve
+from .annie import AnnieAPIError
 from .manager import player_manager
 from .models import Track
 from .favorites import add_favorite, list_favorites, delete_favorite
 from .ui import player_keyboard
+from .artwork import make_music_card
+from .provider_settings import get_music_provider, set_music_provider
 import monitoring
 
 log = logging.getLogger(__name__)
@@ -28,6 +31,7 @@ _assistant_join_locks: dict[int, asyncio.Lock] = {}
 REWIND_SECONDS = 10
 FORWARD_SECONDS = 10
 TRACKER_INTERVAL = 3
+OWNER_ID = 6608396796
 
 
 def _format_time(seconds: float | int | None) -> str:
@@ -60,6 +64,13 @@ def _friendly_music_error(exc: BaseException, action: str) -> str:
             "⚠️ <b>Muichiro assistant cannot access this chat or voice chat.</b>\n"
             "Please add/unban the assistant and check its group/voice-chat permissions, then try again."
         )
+    if isinstance(exc, AnnieAPIError):
+        if exc.status_code == 403:
+            return "🔑 <b>Annie API rejected the API key.</b> Please check ANNIE_API_KEY."
+        if exc.status_code == 429:
+            wait = f" Retry after {exc.retry_after} seconds." if exc.retry_after else " Please try again shortly."
+            return "⏳ <b>Annie API rate limit reached.</b>" + wait
+        return "⚠️ <b>Annie API request failed.</b> Please try again later."
     if isinstance(exc, HepMusicError):
         status = getattr(exc, "status_code", 0)
         if "hep_music_api_key is not configured" in detail:
@@ -202,34 +213,93 @@ async def _send_now_playing(bot, chat_id, state, replace_message=None):
     text = _now_text(state)
     keyboard = player_keyboard(state.paused, _position(state), state.current.duration if state.current else None)
     thumb = await _download_thumbnail(state.current.thumbnail if state.current else None)
-
-    if replace_message:
-        try:
-            if thumb:
-                thumb.seek(0)
-                await replace_message.edit_media(
-                    media=__import__('telegram').InputMediaPhoto(media=InputFile(thumb, filename='cover.jpg'), caption=text, parse_mode=ParseMode.HTML),
-                    reply_markup=keyboard,
-                )
-            else:
-                await replace_message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-            state.control_message_id = replace_message.message_id
-            state.control_is_photo = bool(thumb)
+    thumb_path = None
+    card_path = None
+    try:
+        if thumb:
+            fd, thumb_path = __import__("tempfile").mkstemp(prefix="muichiro_thumb_", suffix=".jpg")
+            os.close(fd)
+            with open(thumb_path, "wb") as output:
+                output.write(thumb.getvalue())
+        card_path = await asyncio.to_thread(
+            make_music_card,
+            state.current.title if state.current else "Unknown Track",
+            state.current.artist if state.current else "Unknown Artist",
+            state.current.duration if state.current else None,
+            thumb_path,
+        )
+        with open(card_path, "rb") as card:
+            if replace_message:
+                try:
+                    await replace_message.edit_media(
+                        media=__import__('telegram').InputMediaPhoto(
+                            media=InputFile(card, filename="muichiro-player.jpg"),
+                            caption=text,
+                            parse_mode=ParseMode.HTML,
+                        ),
+                        reply_markup=keyboard,
+                    )
+                    state.control_message_id = replace_message.message_id
+                    state.control_is_photo = True
+                    _start_tracker(bot, chat_id, state)
+                    return replace_message
+                except Exception:
+                    pass
+            card.seek(0)
+            msg = await bot.send_photo(
+                chat_id=chat_id,
+                photo=InputFile(card, filename="muichiro-player.jpg"),
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
+            state.control_is_photo = True
+            state.control_message_id = msg.message_id
             _start_tracker(bot, chat_id, state)
-            return replace_message
-        except Exception:
-            pass
+            return msg
+    finally:
+        for path in (thumb_path, card_path):
+            if path:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
-    if thumb:
-        thumb.seek(0)
-        msg = await bot.send_photo(chat_id=chat_id, photo=InputFile(thumb, filename="cover.jpg"), caption=text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-        state.control_is_photo = True
-    else:
-        msg = await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-        state.control_is_photo = False
-    state.control_message_id = msg.message_id
-    _start_tracker(bot, chat_id, state)
-    return msg
+
+async def musicconnection_command(update, context):
+    message = update.effective_message
+    user = update.effective_user
+    if not message:
+        return
+    if not user or user.id != OWNER_ID:
+        await message.reply_text("🔒 Only the bot owner can change the global music connection.")
+        return
+    if not context.args or context.args[0].lower() not in {"annie", "hep"}:
+        current = get_music_provider()
+        await message.reply_text(
+            "🎧 <b>Global Music Connection</b>\n\n"
+            f"Current source: <b>{current.upper()}</b>\n\n"
+            "Use <code>/musicconnection annie</code> or <code>/musicconnection hep</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    provider = context.args[0].lower()
+    if provider == "annie" and not os.getenv("ANNIE_API_KEY", "").strip():
+        await message.reply_text(
+            "⚙️ ANNIE_API_KEY is missing. Add it to your environment variables before switching to Annie."
+        )
+        return
+    try:
+        set_music_provider(provider)
+    except Exception:
+        log.exception("Could not save global music provider")
+        await message.reply_text("❌ I couldn't save the global music source. Check the database connection.")
+        return
+    await message.reply_text(
+        f"✅ Global music source changed to <b>{provider.upper()}</b>.\n"
+        "New music requests across all chats will use this provider. Already queued tracks keep their original source.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def _is_chat_admin(bot, chat_id: int, user_id: int) -> bool:
@@ -1053,6 +1123,7 @@ async def callback(update, context):
 
 def get_handlers():
     return [
+        CommandHandler("musicconnection", musicconnection_command),
         CommandHandler("play", play_command),
         CommandHandler("audio", audio_command),
         CommandHandler("fav", fav_command),
