@@ -1,17 +1,21 @@
 <div align="center">
 
 <p align="center">
-  <strong>Animated GIF · Vector SVG</strong><br>
+  <strong>·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·  ·</strong><br>
   <img src="assets/muichiro-banner.svg" alt="Muichiro X Music — scalable vector mist banner" width="100%">
 </p>
 
 
 # Muichiro X Music
 
+<h1 align="center">
+    <img src="https://readme-typing-svg.herokuapp.com?font=Reggae+One&weight=400&size=35&duration=3000&pause=1000&color=9DD0CC&center=true&vCenter=true&width=800&height=55&lines=🎶+Muichiro+Music+;💎+PREMIUM+TELEGRAM+MUSIC+BOT;🎵+ULTIMATE+STREAMING+EXPERIENCE;⚡+LIGHTNING+FAST+%26+SMOOTH" alt="Animated Title" />
+  </h1>
+
 **A Telegram music and community bot wrapped in the calm atmosphere of the Mist Hashira.**
 
 [![Python](https://img.shields.io/badge/Python-3.13-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![Telegram](https://img.shields.io/badge/Platform-Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://telegram.org/)
+[![Telegram](https://img.shields.io/badge/Platform-Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/NyxLuciferX02)
 [![Pyrogram](https://img.shields.io/badge/Voice-Pyrogram-91D9F2?style=flat-square)](https://docs.pyrogram.org/)
 [![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Docker](https://img.shields.io/badge/Deploy-Docker-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
@@ -21,9 +25,8 @@
 </div>
 
 <p align="center">
-  <strong>Animated GIF · Vector SVG</strong><br>
+  <strong>·  ·  ·  ·  ·  ·  ·  ·  ·</strong><br>
   <img src="assets/muichiro-mist.gif" alt="Original layered blue mist animation" width="100%">
-  <img src="assets/muichiro-mist.svg" alt="Original layered blue mist vector artwork" width="0%">
 </p>
 
 
@@ -38,6 +41,10 @@ The music subsystem can search for tracks, prepare audio, deliver audio in Teleg
 The repository also contains a FastAPI webhook service, a PostgreSQL-backed application data layer, and a separately stored SQLite monitoring dashboard.
 
 > This README documents the code in this repository snapshot. It does not imply that every optional provider or deployment integration is configured on a live bot.
+
+<h1 align="center">
+    <img src="https://readme-typing-svg.herokuapp.com?font=Cormorant+Garamond&weight=600&size=35&duration=4000&pause=1000&color=5A9786&center=true&vCenter=true&width=750&height=60&lines=🎶+Muichiro+Music;💎+PREMIUM+TELEGRAM+BOT;🎵+ULTIMATE+STREAMING+EXPERIENCE;⚡+LIGHTNING+FAST+%26+SMOOTH" alt="Animated Title" />
+  </h1>
 
 ## ✦ Feature map
 
@@ -100,7 +107,7 @@ The player interface is generated in `music/ui.py` and managed by `music/handler
 The player hides seek and favourite controls for video mode. Privileged actions are checked against the chat's admin status. The source tree contains artwork/templates, but **no dedicated screenshots of the live music player** were included in the supplied archive, so none are fabricated here.
 
 <p align="center">
-  <strong>Animated GIF · Vector SVG</strong><br>
+  <strong>·  ·  ·  ·  ·  ·  ·  ·  ·</strong><br>
   <img src="assets/muichiro-divider.gif" alt="Original cyan mist animated divider" width=100%">
 </p>
 
@@ -308,7 +315,7 @@ MuichiroXMusic/
 The archive contains an empty `handlers` entry; no files were present inside it.
 
 <p align="center">
-  <strong>Animated GIF · Vector SVG</strong><br>
+  <strong> ·  ·  ·  ·  ·  ·  ·  ·  · </strong><br>
   <img src="assets/muichiro-divider.svg" alt="Original cyan mist vector divider" width="100%">
 </p>
 
@@ -327,7 +334,7 @@ The archive contains an empty `handlers` entry; no files were present inside it.
 ### 1. Clone the repository
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
+git clone https://github.com/ankita900k/MuichiroXMusic
 cd MuichiroXMusic
 ```
 
@@ -498,10 +505,9 @@ The emergency journal variables are declared in `.env.example`; configure them o
 The original mist artwork in `assets/` was generated programmatically for this repository README. It is an atmospheric homage and does not contain anime footage or extracted third-party GIFs.
 
 <p align="center">
-  <strong>Animated GIF · Vector SVG</strong><br>
+  <strong>·  ·  ·  ·  ·  ·  ·  ·  ·</strong><br>
   <img src="assets/muichiro-footer.svg" alt="Original Muichiro X Music vector mist closing artwork" width="100%">
 </p>
-
 
 <div align="center">
 
@@ -510,3 +516,7 @@ The original mist artwork in `assets/` was generated programmatically for this r
 *MUICHIRO X MUSIC · 霧*
 
 </div>
+<p align="center">
+    <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=2,3,6,8,13,14,15,24,30&height=100&section=footer
+    " width="100%"/>
+  </p>
