@@ -102,9 +102,9 @@ async def start(
                 style="primary"
             ),
             InlineKeyboardButton(
-                "🌐𝐒𝐮𝐩𝐩𝐨𝐫𝐭🌐",
-                url="https://t.me/MuichiroSupport",
-                style="success"
+                "🌐𝐒𝐨𝐮𝐫𝐜𝐞🌐",
+                url="https://github.com/ankita900k/MuichiroXMusic",
+                style="danger"
             )
         ]
     ]
