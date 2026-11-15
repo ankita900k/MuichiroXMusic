@@ -25,12 +25,13 @@ class AnnieAPI:
         self.last_metadata = {}
 
     def _url(self, query: str, media_type: str = "audio"):
-        if not self.api_key:
+        api_key = (os.getenv("ANNIE_API_KEY") or self.api_key).strip()
+        if not api_key:
             raise RuntimeError("ANNIE_API_KEY is not configured")
         return (
             f"{self.base}/download?url={quote(query, safe='')}"
             f"&type={media_type}"
-            f"&api_key={quote(self.api_key, safe='')}"
+            f"&api_key={quote(api_key, safe='')}"
         )
 
     def audio_url(self, query: str):
@@ -98,6 +99,58 @@ class AnnieAPI:
 
                 self.last_metadata = {}
                 return await self._save_response(response)
+
+    async def prepare_video(self, query: str):
+        """Download a video file through Annie's video endpoint."""
+        url = self._url(query, "video")
+        timeout = aiohttp.ClientTimeout(total=600, connect=15, sock_read=90)
+        headers = {"User-Agent": "MuichiroMusic/2.0"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status >= 400:
+                    retry = response.headers.get("Retry-After")
+                    try:
+                        retry = int(retry) if retry else None
+                    except (TypeError, ValueError):
+                        retry = None
+                    raise AnnieAPIError(response.status, retry)
+                content_type = (response.headers.get("Content-Type") or "").lower()
+                if "json" in content_type:
+                    payload = await response.json(content_type=None)
+                    self.last_metadata = payload if isinstance(payload, dict) else {}
+                    media_url = None
+                    if isinstance(payload, dict):
+                        for key in ("url", "download_url", "video_url", "stream_url", "link"):
+                            value = payload.get(key)
+                            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                                media_url = value
+                                break
+                    if not media_url:
+                        raise RuntimeError("Annie returned JSON without a playable video URL")
+                    async with session.get(media_url, allow_redirects=True) as media:
+                        if media.status >= 400:
+                            raise AnnieAPIError(media.status)
+                        return await self._save_video_response(media)
+                self.last_metadata = {}
+                return await self._save_video_response(response)
+
+    async def _save_video_response(self, response):
+        fd, path = tempfile.mkstemp(prefix="muichiro_video_", suffix=".mp4")
+        os.close(fd)
+        try:
+            with open(path, "wb") as output:
+                async for chunk in response.content.iter_chunked(1024 * 512):
+                    if chunk:
+                        output.write(chunk)
+            if os.path.getsize(path) < 1024:
+                raise RuntimeError("Annie returned an empty video file")
+            return path
+        except Exception:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            raise
 
     async def _save_response(self, response):
         content_type = (

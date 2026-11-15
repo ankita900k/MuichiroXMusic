@@ -6,7 +6,7 @@ from pathlib import Path
 from pyrogram import Client
 from pytgcalls import PyTgCalls
 from pytgcalls import filters as tg_filters
-from pytgcalls.types import AudioQuality, MediaStream, StreamEnded
+from pytgcalls.types import AudioQuality, MediaStream, StreamEnded, VideoQuality
 
 log = logging.getLogger(__name__)
 
@@ -187,6 +187,20 @@ class VoiceChat:
             str(Path(path).resolve()),
             AudioQuality.HIGH,
             video_flags=MediaStream.Flags.IGNORE,
+        )
+        await self.calls.play(chat_id, stream)
+
+    async def play_video(self, chat_id: int, path: str):
+        """Play an MP4 file with audio and 720p-capped video in a group call."""
+        if not self.started:
+            raise RuntimeError("Music voice layer is not started")
+        if not path or not os.path.exists(path):
+            raise ValueError("Prepared video file is missing")
+        await self._ensure_peer_cached(chat_id)
+        stream = MediaStream(
+            str(Path(path).resolve()),
+            AudioQuality.HIGH,
+            VideoQuality.HD_720p,
         )
         await self.calls.play(chat_id, stream)
 

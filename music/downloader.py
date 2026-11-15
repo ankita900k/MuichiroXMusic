@@ -366,6 +366,92 @@ def _annie_payload_metadata(raw: Any) -> dict[str, Any]:
     return normalized
 
 
+def _youtube_video_id(target: str) -> str | None:
+    from urllib.parse import parse_qs, urlparse
+    try:
+        parsed = urlparse(target)
+        if parsed.hostname in {"youtu.be", "www.youtu.be"}:
+            return parsed.path.strip("/").split("/")[0] or None
+        if parsed.hostname and parsed.hostname.endswith("youtube.com"):
+            if parsed.path == "/watch":
+                return parse_qs(parsed.query).get("v", [None])[0]
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live"}:
+                return parts[1]
+    except Exception:
+        return None
+    return None
+
+
+def _iso8601_duration(value: str | None) -> int | None:
+    if not value:
+        return None
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", value)
+    if not match:
+        return None
+    hours, minutes, seconds = (int(part or 0) for part in match.groups())
+    total = hours * 3600 + minutes * 60 + seconds
+    return total or None
+
+
+async def _youtube_data_api_metadata(target: str) -> dict[str, Any]:
+    """Fetch official YouTube title/channel/thumbnail/duration metadata.
+
+    This is metadata-only: all media bytes still come from the selected provider.
+    API errors/quota exhaustion never block Annie playback; yt-dlp remains fallback.
+    """
+    key = (os.getenv("YOUTUBE_API_KEY") or "").strip()
+    if not key:
+        return {}
+    timeout = aiohttp.ClientTimeout(total=12, connect=4, sock_read=8)
+    try:
+        video_id = _youtube_video_id(target)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            if not video_id:
+                params = {
+                    "part": "snippet", "type": "video", "maxResults": "1",
+                    "q": target, "key": key,
+                    "regionCode": os.getenv("YOUTUBE_REGION_CODE", "IN"),
+                    "relevanceLanguage": os.getenv("YOUTUBE_RELEVANCE_LANGUAGE", "en"),
+                }
+                async with session.get("https://www.googleapis.com/youtube/v3/search", params=params) as response:
+                    if response.status != 200:
+                        log.warning("YouTube Data API search returned HTTP %s", response.status)
+                        return {}
+                    payload = await response.json(content_type=None)
+                items = payload.get("items") or []
+                if not items:
+                    return {}
+                video_id = ((items[0].get("id") or {}).get("videoId"))
+                if not video_id:
+                    return {}
+
+            params = {"part": "snippet,contentDetails", "id": video_id, "key": key}
+            async with session.get("https://www.googleapis.com/youtube/v3/videos", params=params) as response:
+                if response.status != 200:
+                    log.warning("YouTube Data API videos.list returned HTTP %s", response.status)
+                    return {}
+                payload = await response.json(content_type=None)
+            items = payload.get("items") or []
+            if not items:
+                return {}
+            item = items[0]
+            snippet = item.get("snippet") or {}
+            thumbs = snippet.get("thumbnails") or {}
+            thumb = next((thumbs.get(name, {}).get("url") for name in ("maxres", "standard", "high", "medium", "default") if thumbs.get(name, {}).get("url")), None)
+            return {
+                "id": video_id,
+                "title": snippet.get("title"),
+                "artist": snippet.get("channelTitle"),
+                "thumbnail": thumb,
+                "duration": _iso8601_duration((item.get("contentDetails") or {}).get("duration")),
+                "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+            }
+    except Exception as exc:
+        log.info("YouTube Data API metadata lookup skipped: %s", type(exc).__name__)
+        return {}
+
+
 def _yt_dlp_metadata_sync(target: str) -> dict[str, Any]:
     """Resolve public metadata only; Annie remains the audio download provider."""
     try:
@@ -426,10 +512,12 @@ async def _resolve_with_annie(target: str) -> dict[str, Any]:
     """Download audio from Annie and enrich missing fields independently."""
     # Run the independent metadata lookup alongside Annie's audio download so
     # the enrichment does not add a second full network wait to playback startup.
-    path, yt_info = await asyncio.gather(
+    path, api_info, yt_info = await asyncio.gather(
         annie.prepare_audio(target),
+        _youtube_data_api_metadata(target),
         asyncio.to_thread(_yt_dlp_metadata_sync, target),
     )
+    yt_info = {**yt_info, **{k: v for k, v in api_info.items() if v not in (None, "", [], {})}}
     raw = _annie_payload_metadata(getattr(annie, "last_metadata", {}) or {})
 
     def first(*values):
@@ -556,7 +644,7 @@ def cleanup_media(path: str | None) -> None:
         if p.exists():
             p.unlink()
         parent = p.parent
-        if parent.name.startswith(("muichiro_hep_", "muichiro_seek_")):
+        if parent.name.startswith(("muichiro_hep_", "muichiro_seek_", "muichiro_video_")):
             try:
                 parent.rmdir()
             except OSError:

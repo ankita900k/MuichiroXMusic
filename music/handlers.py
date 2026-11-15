@@ -14,7 +14,7 @@ from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from . import runtime
 from .downloader import HepMusicError, cleanup_media, download_audio, resolve
-from .annie import AnnieAPIError
+from .annie import AnnieAPIError, annie
 from .manager import player_manager
 from .models import Track
 from .favorites import add_favorite, list_favorites, delete_favorite
@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 
 # Serialize auto-join attempts per group to prevent duplicate invites and join races.
 _assistant_join_locks: dict[int, asyncio.Lock] = {}
+_active_video_sessions: dict[int, str] = {}
 
 REWIND_SECONDS = 10
 FORWARD_SECONDS = 10
@@ -638,6 +639,7 @@ async def _relative_seek(chat_id: int, delta: float):
 
 async def _stop(chat_id: int, bot):
     state = player_manager.get(chat_id)
+    video_path = _active_video_sessions.pop(chat_id, None)
     state.transition = True
     state.ignore_stream_end_until = asyncio.get_running_loop().time() + 5.0
     paths = [state.playback_path, state.current.media_path if state.current else None]
@@ -663,6 +665,7 @@ async def _stop(chat_id: int, bot):
         state.transition = False
         for path in paths:
             cleanup_media(path)
+        cleanup_media(video_path)
 
 
 def _queue_text(state):
@@ -725,6 +728,68 @@ async def audio_command(update, context):
         monitoring.music_event(f"AUDIO DELIVERY FAILED · chat_id={getattr(update.effective_chat, 'id', '?')} · query={query!r} · error={type(exc).__name__}: {exc}", "ERROR")
         log.exception("Audio delivery failed")
         await _report_failure(message, status, _friendly_music_error(exc, "Audio delivery"))
+
+
+async def video_command(update, context):
+    """Download a video through Annie and deliver it to the current chat."""
+    message = update.effective_message
+    if not message:
+        return
+    query = " ".join(context.args).strip()
+    if not query:
+        await message.reply_text("🎬 <b>Usage</b>\n<code>/video video name or YouTube URL</code>", parse_mode=ParseMode.HTML)
+        return
+    status = await message.reply_text("🎬 <b>Preparing video with Annie…</b>", parse_mode=ParseMode.HTML)
+    path = None
+    try:
+        path = await annie.prepare_video(query)
+        await message.reply_video(video=path, supports_streaming=True)
+        try:
+            await status.delete()
+        except Exception:
+            pass
+    except Exception as exc:
+        log.exception("Annie video delivery failed")
+        await _report_failure(message, status, _friendly_music_error(exc, "Video download"))
+    finally:
+        cleanup_media(path)
+
+
+async def vplay_command(update, context):
+    """Play an Annie video in the group's active voice chat."""
+    message = update.effective_message
+    chat = update.effective_chat
+    if not message or not chat:
+        return
+    query = " ".join(context.args).strip()
+    if not query:
+        await message.reply_text("📺 <b>Usage</b>\n<code>/vplay video name or YouTube URL</code>", parse_mode=ParseMode.HTML)
+        return
+    if getattr(chat, "type", "") not in ("group", "supergroup"):
+        await message.reply_text("⚠️ /vplay works in a group with an active voice chat.")
+        return
+    state = player_manager.get(chat.id)
+    if state.current:
+        await message.reply_text("⚠️ Audio is already playing. Use /stop first, then run /vplay.")
+        return
+    status = await message.reply_text("📺 <b>Preparing video with Annie…</b>", parse_mode=ParseMode.HTML)
+    path = None
+    try:
+        path = await annie.prepare_video(query)
+        await _ensure_assistant_in_group(context.bot, chat.id)
+        await runtime.voice.play_video(chat.id, path)
+        previous = _active_video_sessions.get(chat.id)
+        _active_video_sessions[chat.id] = path
+        if previous and previous != path:
+            cleanup_media(previous)
+        path = None  # Ownership transferred to the active voice-chat session.
+        await status.edit_text("📺 <b>Video is now playing in the voice chat.</b>", parse_mode=ParseMode.HTML)
+        monitoring.music_event(f"VIDEO PLAYING · chat_id={chat.id} · query={query!r}")
+    except Exception as exc:
+        log.exception("Annie voice video playback failed")
+        await _report_failure(message, status, _friendly_music_error(exc, "Video playback"))
+    finally:
+        cleanup_media(path)
 
 
 async def fav_command(update, context):
@@ -1126,6 +1191,8 @@ def get_handlers():
         CommandHandler("musicconnection", musicconnection_command),
         CommandHandler("play", play_command),
         CommandHandler("audio", audio_command),
+        CommandHandler("video", video_command),
+        CommandHandler("vplay", vplay_command),
         CommandHandler("fav", fav_command),
         CommandHandler("delfav", delfav_command),
         CommandHandler("playfav", playfav_command),
@@ -1141,6 +1208,15 @@ def get_handlers():
 
 
 async def on_stream_end(chat_id: int, bot):
+    video_path = _active_video_sessions.pop(chat_id, None)
+    if video_path:
+        cleanup_media(video_path)
+        monitoring.music_event(f"VIDEO ENDED · chat_id={chat_id}")
+        try:
+            await bot.send_message(chat_id=chat_id, text="📺 Video playback finished.")
+        except Exception:
+            pass
+        return
     monitoring.music_event(f"TRACK ENDED · chat_id={chat_id}")
     async with player_manager.lock(chat_id):
         state = player_manager.get(chat_id)

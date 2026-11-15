@@ -390,6 +390,8 @@ async def button_callback(
 
 <code>/play &lt;song&gt;</code> — Play or queue a track
 <code>/audio &lt;song&gt;</code> — Send the audio file
+<code>/video &lt;query&gt;</code> — Download a video through Annie
+<code>/vplay &lt;query&gt;</code> — Play a video in the group voice chat
 <code>/pause</code> — Pause playback
 <code>/resume</code> — Resume playback
 <code>/skip</code> — Skip the current track
