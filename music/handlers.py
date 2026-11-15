@@ -751,7 +751,7 @@ async def audio_command(update, context):
 
 
 async def video_command(update, context):
-    """Download a video through Annie and deliver it to the current chat."""
+    """Download a video through Muichiro and deliver it to the current chat."""
     message = update.effective_message
     if not message:
         return
@@ -759,7 +759,7 @@ async def video_command(update, context):
     if not query:
         await message.reply_text("🎬 <b>Usage</b>\n<code>/video video name or YouTube URL</code>", parse_mode=ParseMode.HTML)
         return
-    status = await message.reply_text("🎬 <b>Preparing video with Annie…</b>", parse_mode=ParseMode.HTML)
+    status = await message.reply_text("🎬 <b>Preparing video with Muichiro…</b>", parse_mode=ParseMode.HTML)
     path = None
     try:
         metadata = await resolve_youtube_metadata(query)
@@ -778,7 +778,7 @@ async def video_command(update, context):
 
 
 async def vplay_command(update, context):
-    """Queue an Annie video as a normal player item in the group voice chat."""
+    """Queue an Your video as a normal player item in the group voice chat."""
     message = update.effective_message
     chat = update.effective_chat
     if not message or not chat:
