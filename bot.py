@@ -96,15 +96,16 @@ async def start(
             )
         ],
         [
+            
+            InlineKeyboardButton(
+                "🌐𝐒𝐨𝐮𝐫𝐜𝐞🌐",
+                url="https://github.com/ankita900k/MuichiroXMusic",
+                 style="danger"
+            ),
             InlineKeyboardButton(
                 "📢𝐔𝐩𝐝𝐚𝐭𝐞𝐬📢",
                 url="https://t.me/MuichiroUpdates",
                 style="primary"
-            ),
-            InlineKeyboardButton(
-                "🌐𝐒𝐨𝐮𝐫𝐜𝐞🌐",
-                url="https://github.com/ankita900k/MuichiroXMusic",
-                style="danger"
             )
         ]
     ]
