@@ -1,8 +1,10 @@
 <div align="center">
 
 <p align="center">
-  <img src="assets/muichiro-banner.gif" alt="Muichiro X Music — animated original mist banner" width="100%">
+  <img src="assets/muichiro-banner.svg" alt="Muichiro X Music — original animated mist banner" width="100%">
 </p>
+
+<sub>GIF fallback: <a href="assets/muichiro-banner.gif">open animated banner</a></sub>
 
 # Muichiro X Music
 
@@ -19,8 +21,10 @@
 </div>
 
 <p align="center">
-  <img src="assets/muichiro-mist.gif" alt="Looping blue mist animation" width="100%">
+  <img src="assets/muichiro-mist.svg" alt="Original layered blue mist animation" width="100%">
 </p>
+
+<sub>GIF fallback: <a href="assets/muichiro-mist.gif">open looping mist</a></sub>
 
 ---
 
@@ -95,8 +99,10 @@ The player interface is generated in `music/ui.py` and managed by `music/handler
 The player hides seek and favourite controls for video mode. Privileged actions are checked against the chat's admin status. The source tree contains artwork/templates, but **no dedicated screenshots of the live music player** were included in the supplied archive, so none are fabricated here.
 
 <p align="center">
-  <img src="assets/muichiro-divider.gif" alt="Animated cyan mist divider" width="100%">
+  <img src="assets/muichiro-divider.svg" alt="Original cyan mist divider" width="100%">
 </p>
+
+<sub>GIF fallback: <a href="assets/muichiro-divider.gif">open animated divider</a></sub>
 
 ## ⌘ Commands
 
@@ -486,8 +492,10 @@ The emergency journal variables are declared in `.env.example`; configure them o
 The original mist artwork in `assets/` was generated programmatically for this repository README. It is an atmospheric homage and does not contain anime footage or extracted third-party GIFs.
 
 <p align="center">
-  <img src="assets/muichiro-footer.gif" alt="Animated Muichiro X Music mist closing artwork" width="100%">
+  <img src="assets/muichiro-footer.svg" alt="Original Muichiro X Music mist closing artwork" width="100%">
 </p>
+
+<sub>GIF fallback: <a href="assets/muichiro-footer.gif">open animated footer</a></sub>
 
 <div align="center">
 
