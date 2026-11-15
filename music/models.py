@@ -18,6 +18,7 @@ class Track:
     provider: str = "hep_library"
     isrc: Optional[str] = None
     album: Optional[str] = None
+    media_type: str = "audio"  # audio or video
 
 
 @dataclass

@@ -13,7 +13,7 @@ from telegram.error import TimedOut
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 
 from . import runtime
-from .downloader import HepMusicError, cleanup_media, download_audio, resolve
+from .downloader import HepMusicError, cleanup_media, download_audio, resolve, resolve_youtube_metadata
 from .annie import AnnieAPIError, annie
 from .manager import player_manager
 from .models import Track
@@ -27,7 +27,6 @@ log = logging.getLogger(__name__)
 
 # Serialize auto-join attempts per group to prevent duplicate invites and join races.
 _assistant_join_locks: dict[int, asyncio.Lock] = {}
-_active_video_sessions: dict[int, str] = {}
 
 REWIND_SECONDS = 10
 FORWARD_SECONDS = 10
@@ -67,24 +66,24 @@ def _friendly_music_error(exc: BaseException, action: str) -> str:
         )
     if isinstance(exc, AnnieAPIError):
         if exc.status_code == 403:
-            return "🔑 <b>Annie API rejected the API key.</b> Please check ANNIE_API_KEY."
+            return "🔑 <b>Youtube rejected the API key.</b> Please check Muichiro_API_KEY."
         if exc.status_code == 429:
             wait = f" Retry after {exc.retry_after} seconds." if exc.retry_after else " Please try again shortly."
-            return "⏳ <b>Annie API rate limit reached.</b>" + wait
-        return "⚠️ <b>Annie API request failed.</b> Please try again later."
+            return "⏳ <b>Muichiro rate limit reached.</b>" + wait
+        return "⚠️ <b>Muichiro request failed.</b> Please try again later."
     if isinstance(exc, HepMusicError):
         status = getattr(exc, "status_code", 0)
         if "hep_music_api_key is not configured" in detail:
             return "⚙️ <b>Muichiro music API isn't configured.</b>\nPlease inform the owner @nyxluciferx02."
         if status == 401:
-            return "🔑 <b>Hep.gg rejected Muichiro's API key.</b>\nPlease inform the owner @nyxluciferx02."
+            return "🔑 <b>Youtube rejected Muichiro's API key.</b>\nPlease inform the owner @nyxluciferx02."
         if status == 404:
-            return "🔎 <b>Hep.gg couldn't find this track.</b>\nTry another song or a supported public media link."
+            return "🔎 <b>Youtube couldn't find this track.</b>\nTry another song or a supported public media link."
         if status == 422:
-            return "🚫 <b>Hep.gg couldn't fetch this media.</b>\nIt may be unavailable or restricted. Please try another track."
+            return "🚫 <b>Youtube couldn't fetch this media.</b>\nIt may be unavailable or restricted. Please try another track."
         if status == 400:
-            return "🔗 <b>Hep.gg couldn't use this link.</b>\nTry a supported public video/audio link or search by song name."
-        return "⚠️ <b>Playback failed on Hep.gg.</b>\nPlease try again later or inform the owner @nyxluciferx02."
+            return "🔗 <b>Youtube couldn't use this link.</b>\nTry a supported public video/audio link or search by song name."
+        return "⚠️ <b>Playback failed on Youtube.</b>\nPlease try again later or inform the owner @nyxluciferx02."
     if "sign in to confirm you're not a bot" in detail or "confirm you're not a bot" in detail:
         return "⚠️ <b>The music source rejected this request.</b>\nTry a supported public link or another track."
     if "unsupported url" in detail:
@@ -130,7 +129,7 @@ def _now_text(state) -> str:
         return "🎵 <b>Nothing is playing.</b>"
     return (
         "🎧 <b>𝗡𝗢𝗪 𝗣𝗟𝗔𝗬𝗜𝗡𝗚</b>\n\n"
-        f"🎵 <b>{escape(track.title)}</b>\n"
+        f"{'📺' if track.media_type == 'video' else '🎵'} <b>{escape(track.title)}</b>\n"
         f"🎤 {escape(track.artist or 'Unknown Artist')}\n"
         + (f"💿 {escape(track.album)}\n" if track.album else "")
         + f"👤 {escape(track.requested_name)}\n"
@@ -142,7 +141,7 @@ async def _edit_player_keyboard(bot, chat_id: int, state):
     message_id = state.control_message_id
     if not message_id or not state.current:
         return False
-    keyboard = player_keyboard(state.paused, _position(state), state.current.duration)
+    keyboard = player_keyboard(state.paused, _position(state), state.current.duration, state.current.media_type)
     async with player_manager.ui_lock(chat_id):
         if state.control_message_id != message_id:
             return False
@@ -212,7 +211,7 @@ async def _download_thumbnail(url: str | None):
 
 async def _send_now_playing(bot, chat_id, state, replace_message=None):
     text = _now_text(state)
-    keyboard = player_keyboard(state.paused, _position(state), state.current.duration if state.current else None)
+    keyboard = player_keyboard(state.paused, _position(state), state.current.duration if state.current else None, state.current.media_type if state.current else "audio")
     thumb = await _download_thumbnail(state.current.thumbnail if state.current else None)
     thumb_path = None
     card_path = None
@@ -354,6 +353,21 @@ async def _make_track(update: Update, query: str) -> Track:
         provider=info.get("provider") or "hep_library",
         isrc=info.get("isrc"),
         album=info.get("album"),
+        media_type="audio",
+    )
+
+
+async def _make_video_track(update: Update, query: str) -> Track:
+    info = await resolve_youtube_metadata(query)
+    user = update.effective_user
+    return Track(
+        query=query, title=info.get("title") or query,
+        requested_by=user.id if user else 0,
+        requested_name=user.full_name if user else "Unknown",
+        source_url=info.get("webpage_url") or query,
+        artist=info.get("artist") or "YouTube",
+        thumbnail=info.get("thumbnail"), duration=info.get("duration"),
+        video_id=info.get("id"), provider="annie", media_type="video",
     )
 
 
@@ -371,7 +385,10 @@ async def _prepare_track(track: Track):
         "album": track.album,
         "thumbnail": track.thumbnail,
     }
-    track.media_path = await download_audio(info)
+    if track.media_type == "video":
+        track.media_path = await annie.prepare_video(track.source_url or track.query)
+    else:
+        track.media_path = await download_audio(info)
     track.title = info.get("title") or track.title
     track.artist = info.get("artist") or track.artist
     track.duration = info.get("duration") or track.duration
@@ -476,7 +493,10 @@ async def _start_track(chat_id: int, track: Track, replacing=False, bot=None):
             await _ensure_assistant_in_group(bot, chat_id)
         await _prepare_track(track)
         state.playback_path = track.media_path
-        await runtime.voice.play(chat_id, track.media_path)
+        if track.media_type == "video":
+            await runtime.voice.play_video(chat_id, track.media_path)
+        else:
+            await runtime.voice.play(chat_id, track.media_path)
         state.started_at = asyncio.get_running_loop().time()
         monitoring.music_event(f"PLAY STARTED · chat_id={chat_id} · title={track.title!r} · artist={track.artist or 'Unknown Artist'!r} · requested_by={track.requested_name!r}")
     except Exception:
@@ -593,6 +613,8 @@ async def _relative_seek(chat_id: int, delta: float):
     track = state.current
     if not track or not track.media_path:
         raise RuntimeError("Current track is unavailable")
+    if track.media_type == "video":
+        raise RuntimeError("Seeking is not available for video playback yet")
     duration = float(track.duration or 0)
     if duration <= 0:
         raise RuntimeError("Track duration is unavailable")
@@ -639,7 +661,6 @@ async def _relative_seek(chat_id: int, delta: float):
 
 async def _stop(chat_id: int, bot):
     state = player_manager.get(chat_id)
-    video_path = _active_video_sessions.pop(chat_id, None)
     state.transition = True
     state.ignore_stream_end_until = asyncio.get_running_loop().time() + 5.0
     paths = [state.playback_path, state.current.media_path if state.current else None]
@@ -665,13 +686,12 @@ async def _stop(chat_id: int, bot):
         state.transition = False
         for path in paths:
             cleanup_media(path)
-        cleanup_media(video_path)
 
 
 def _queue_text(state):
     if not state.queue:
         return "📋 <b>𝗤𝗨𝗘𝗨𝗘</b>\n\nQueue is empty."
-    lines = [f"<b>{i:02}</b> · {escape(t.title)} — {escape(t.requested_name)}" for i, t in enumerate(state.queue[:20], 1)]
+    lines = [f"<b>{i:02}</b> · {'📺' if t.media_type == 'video' else '🎵'} {escape(t.title)} — {escape(t.requested_name)}" for i, t in enumerate(state.queue[:20], 1)]
     return "📋 <b>𝗤𝗨𝗘𝗨𝗘</b>\n\n" + "\n".join(lines)
 
 
@@ -742,7 +762,9 @@ async def video_command(update, context):
     status = await message.reply_text("🎬 <b>Preparing video with Annie…</b>", parse_mode=ParseMode.HTML)
     path = None
     try:
-        path = await annie.prepare_video(query)
+        metadata = await resolve_youtube_metadata(query)
+        media_target = metadata.get("webpage_url") or query
+        path = await annie.prepare_video(media_target)
         await message.reply_video(video=path, supports_streaming=True)
         try:
             await status.delete()
@@ -756,7 +778,7 @@ async def video_command(update, context):
 
 
 async def vplay_command(update, context):
-    """Play an Annie video in the group's active voice chat."""
+    """Queue an Annie video as a normal player item in the group voice chat."""
     message = update.effective_message
     chat = update.effective_chat
     if not message or not chat:
@@ -768,28 +790,25 @@ async def vplay_command(update, context):
     if getattr(chat, "type", "") not in ("group", "supergroup"):
         await message.reply_text("⚠️ /vplay works in a group with an active voice chat.")
         return
-    state = player_manager.get(chat.id)
-    if state.current:
-        await message.reply_text("⚠️ Audio is already playing. Use /stop first, then run /vplay.")
-        return
-    status = await message.reply_text("📺 <b>Preparing video with Annie…</b>", parse_mode=ParseMode.HTML)
-    path = None
+    status = await message.reply_text("📺 <b>Finding video and preparing player…</b>", parse_mode=ParseMode.HTML)
     try:
-        path = await annie.prepare_video(query)
-        await _ensure_assistant_in_group(context.bot, chat.id)
-        await runtime.voice.play_video(chat.id, path)
-        previous = _active_video_sessions.get(chat.id)
-        _active_video_sessions[chat.id] = path
-        if previous and previous != path:
-            cleanup_media(previous)
-        path = None  # Ownership transferred to the active voice-chat session.
-        await status.edit_text("📺 <b>Video is now playing in the voice chat.</b>", parse_mode=ParseMode.HTML)
-        monitoring.music_event(f"VIDEO PLAYING · chat_id={chat.id} · query={query!r}")
+        track = await _make_video_track(update, query)
+        async with player_manager.lock(chat.id):
+            state = player_manager.get(chat.id)
+            if state.current:
+                pos = player_manager.enqueue(chat.id, track)
+                _schedule_preload(chat.id)
+                await status.edit_text(
+                    f"➕ <b>Video queued</b> · <b>{escape(track.title)}</b>\n📍 Position: <b>#{pos}</b>\n📋 Waiting: <b>{len(state.queue)}</b>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            await _start_track(chat.id, track, bot=context.bot)
+            await _send_now_playing(context.bot, chat.id, state, replace_message=status)
+        monitoring.music_event(f"VIDEO QUEUED/PLAYING · chat_id={chat.id} · title={track.title!r} · requested_by={track.requested_name!r}")
     except Exception as exc:
-        log.exception("Annie voice video playback failed")
+        log.exception("Video queue/playback failed")
         await _report_failure(message, status, _friendly_music_error(exc, "Video playback"))
-    finally:
-        cleanup_media(path)
 
 
 async def fav_command(update, context):
@@ -1208,16 +1227,7 @@ def get_handlers():
 
 
 async def on_stream_end(chat_id: int, bot):
-    video_path = _active_video_sessions.pop(chat_id, None)
-    if video_path:
-        cleanup_media(video_path)
-        monitoring.music_event(f"VIDEO ENDED · chat_id={chat_id}")
-        try:
-            await bot.send_message(chat_id=chat_id, text="📺 Video playback finished.")
-        except Exception:
-            pass
-        return
-    monitoring.music_event(f"TRACK ENDED · chat_id={chat_id}")
+    monitoring.music_event(f"MEDIA ENDED · chat_id={chat_id}")
     async with player_manager.lock(chat_id):
         state = player_manager.get(chat_id)
         now = asyncio.get_running_loop().time()
@@ -1233,7 +1243,10 @@ async def on_stream_end(chat_id: int, bot):
                 state.transition = True
                 state.ignore_stream_end_until = asyncio.get_running_loop().time() + 5.0
                 try:
-                    await runtime.voice.play(chat_id, track.media_path)
+                    if track.media_type == "video":
+                        await runtime.voice.play_video(chat_id, track.media_path)
+                    else:
+                        await runtime.voice.play(chat_id, track.media_path)
                     if not state.loop_infinite:
                         state.loop_remaining = max(0, state.loop_remaining - 1)
                     state.position_offset = 0.0

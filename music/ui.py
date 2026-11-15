@@ -20,20 +20,22 @@ def _progress_bar(position: float | int | None, duration: float | int | None, wi
     return _BAR * index + _DOT + _BAR * (width - index - 1)
 
 
-def player_keyboard(paused: bool, position: float | int | None = None, duration: float | int | None = None):
+def player_keyboard(paused: bool, position: float | int | None = None, duration: float | int | None = None, media_type: str = "audio"):
     pause_text = "▶️" if paused else "⏸️"
     tracker = f"{_format_time(position)}  {_progress_bar(position, duration)}  {_format_time(duration)}"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(tracker, callback_data="music:player:noop")],
-        [
-            InlineKeyboardButton("⏹️", callback_data="music:player:stop", style="danger"),
-            InlineKeyboardButton("⏪", callback_data="music:player:rewind"),
-            InlineKeyboardButton(pause_text, callback_data="music:player:pause_resume", style="primary"),
-            InlineKeyboardButton("⏩", callback_data="music:player:forward"),
-            InlineKeyboardButton("📋", callback_data="music:player:queue"),
-        ],
-        [InlineKeyboardButton("♡ 𝗙𝗔𝗩𝗢𝗨𝗥𝗜𝗧𝗘", callback_data="music:player:favorite")],
-    ])
+    controls = [
+        InlineKeyboardButton("⏹️", callback_data="music:player:stop", style="danger"),
+    ]
+    if media_type != "video":
+        controls.append(InlineKeyboardButton("⏪", callback_data="music:player:rewind"))
+    controls.append(InlineKeyboardButton(pause_text, callback_data="music:player:pause_resume", style="primary"))
+    if media_type != "video":
+        controls.append(InlineKeyboardButton("⏩", callback_data="music:player:forward"))
+    controls.append(InlineKeyboardButton("📋", callback_data="music:player:queue"))
+    rows = [[InlineKeyboardButton(tracker, callback_data="music:player:noop")], controls]
+    if media_type != "video":
+        rows.append([InlineKeyboardButton("♡ 𝗙𝗔𝗩𝗢𝗨𝗥𝗜𝗧𝗘", callback_data="music:player:favorite")])
+    return InlineKeyboardMarkup(rows)
 
 
 def queue_keyboard():

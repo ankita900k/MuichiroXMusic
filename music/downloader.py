@@ -395,11 +395,7 @@ def _iso8601_duration(value: str | None) -> int | None:
 
 
 async def _youtube_data_api_metadata(target: str) -> dict[str, Any]:
-    """Fetch official YouTube title/channel/thumbnail/duration metadata.
-
-    This is metadata-only: all media bytes still come from the selected provider.
-    API errors/quota exhaustion never block Annie playback; yt-dlp remains fallback.
-    """
+    """Fetch official YouTube metadata first; this never downloads media bytes."""
     key = (os.getenv("YOUTUBE_API_KEY") or "").strip()
     if not key:
         return {}
@@ -510,14 +506,16 @@ def _yt_dlp_metadata_sync(target: str) -> dict[str, Any]:
 
 async def _resolve_with_annie(target: str) -> dict[str, Any]:
     """Download audio from Annie and enrich missing fields independently."""
-    # Run the independent metadata lookup alongside Annie's audio download so
-    # the enrichment does not add a second full network wait to playback startup.
-    path, api_info, yt_info = await asyncio.gather(
-        annie.prepare_audio(target),
-        _youtube_data_api_metadata(target),
-        asyncio.to_thread(_yt_dlp_metadata_sync, target),
-    )
-    yt_info = {**yt_info, **{k: v for k, v in api_info.items() if v not in (None, "", [], {})}}
+    # Official YouTube Data API is the primary metadata/search source. Only
+    # fall back to yt-dlp when the API is unavailable or returns incomplete data.
+    api_info = await _youtube_data_api_metadata(target)
+    useful_api = bool(api_info.get("title") and api_info.get("id"))
+    yt_info = api_info if useful_api else await asyncio.to_thread(_yt_dlp_metadata_sync, target)
+    if useful_api:
+        log.debug("YouTube metadata resolved with YouTube Data API")
+    elif yt_info:
+        log.info("YouTube Data API unavailable/incomplete; using yt-dlp metadata fallback")
+    path = await annie.prepare_audio(target)
     raw = _annie_payload_metadata(getattr(annie, "last_metadata", {}) or {})
 
     def first(*values):
@@ -578,6 +576,21 @@ async def _resolve_with_annie(target: str) -> dict[str, Any]:
         "id": yt_info.get("id"),
         "isrc": None, "stream_url": None,
     }
+
+
+async def resolve_youtube_metadata(target: str) -> dict[str, Any]:
+    """Resolve YouTube metadata using Data API first, yt-dlp second."""
+    target = target.strip()
+    if not target:
+        raise ValueError("Empty video query")
+    info = await _youtube_data_api_metadata(target)
+    if info.get("id") and info.get("title"):
+        return info
+    fallback = await asyncio.to_thread(_yt_dlp_metadata_sync, target)
+    if fallback:
+        log.info("YouTube Data API unavailable/incomplete; yt-dlp supplied video metadata")
+        return fallback
+    return {"title": target, "artist": "YouTube", "webpage_url": target, "id": _youtube_video_id(target)}
 
 
 async def resolve(query: str) -> dict[str, Any]:
