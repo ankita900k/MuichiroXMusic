@@ -2,8 +2,8 @@
 
 <p align="center">
   <strong>Animated GIF · Vector SVG</strong><br>
-  <img src="assets/muichiro-banner.gif" alt="Muichiro X Music — original animated mist banner" width="49%">
-  <img src="assets/muichiro-banner.svg" alt="Muichiro X Music — scalable vector mist banner" width="49%">
+  <img src="assets/muichiro-banner.gif" alt="Muichiro X Music — original animated mist banner" width="0%">
+  <img src="assets/muichiro-banner.svg" alt="Muichiro X Music — scalable vector mist banner" width="100%">
 </p>
 
 
@@ -23,8 +23,8 @@
 
 <p align="center">
   <strong>Animated GIF · Vector SVG</strong><br>
-  <img src="assets/muichiro-mist.gif" alt="Original layered blue mist animation" width="49%">
-  <img src="assets/muichiro-mist.svg" alt="Original layered blue mist vector artwork" width="49%">
+  <img src="assets/muichiro-mist.gif" alt="Original layered blue mist animation" width="100%">
+  <img src="assets/muichiro-mist.svg" alt="Original layered blue mist vector artwork" width="0%">
 </p>
 
 
@@ -102,8 +102,8 @@ The player hides seek and favourite controls for video mode. Privileged actions 
 
 <p align="center">
   <strong>Animated GIF · Vector SVG</strong><br>
-  <img src="assets/muichiro-divider.gif" alt="Original cyan mist animated divider" width="49%">
-  <img src="assets/muichiro-divider.svg" alt="Original cyan mist vector divider" width="49%">
+  <img src="assets/muichiro-divider.gif" alt="Original cyan mist animated divider" width=100%">
+  <img src="assets/muichiro-divider.svg" alt="Original cyan mist vector divider" width="0%">
 </p>
 
 
@@ -308,6 +308,12 @@ MuichiroXMusic/
 ```
 
 The archive contains an empty `handlers` entry; no files were present inside it.
+
+<p align="center">
+  <strong>Animated GIF · Vector SVG</strong><br>
+  <img src="assets/muichiro-divider.gif" alt="Original cyan mist animated divider" width="0%">
+  <img src="assets/muichiro-divider.svg" alt="Original cyan mist vector divider" width="100%">
+</p>
 
 ## 🚀 Installation
 
